@@ -19,7 +19,11 @@ import { StatusBadge } from "@/components/audit-ar/status-badge";
 import { getAuditUnit, getSubmission, acquireDraftLock } from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { formatDateTime } from "@/lib/shared/date-format";
-import type { AuditUnitDoc, AuditSubmissionDoc } from "@/lib/audit-ar/types";
+import {
+  formatPltStatus,
+  type AuditUnitDoc,
+  type AuditSubmissionDoc,
+} from "@/lib/audit-ar/types";
 
 export default function FieldUnitDetailPage() {
   const router = useRouter();
@@ -31,6 +35,7 @@ export default function FieldUnitDetailPage() {
   const [submission, setSubmission] = useState<AuditSubmissionDoc | null>(null);
   const [loading, setLoading] = useState(true);
   const [acquiring, setAcquiring] = useState(false);
+  const [loadedAt, setLoadedAt] = useState(0);
 
   const load = useCallback(async () => {
     if (!unitId) return;
@@ -41,12 +46,37 @@ export default function FieldUnitDetailPage() {
     } else {
       setSubmission(null);
     }
+    setLoadedAt(Date.now());
     setLoading(false);
   }, [unitId]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+
+    async function loadInitial() {
+      if (!unitId) return;
+      try {
+        const u = await getAuditUnit(unitId);
+        if (cancelled) return;
+        setUnit(u);
+        if (u?.currentSubmissionId) {
+          const sub = await getSubmission(unitId, u.currentSubmissionId);
+          if (cancelled) return;
+          setSubmission(sub);
+        } else {
+          setSubmission(null);
+        }
+        setLoadedAt(Date.now());
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadInitial();
+    return () => {
+      cancelled = true;
+    };
+  }, [unitId]);
 
   async function handleStart() {
     if (!unit || !user) return;
@@ -83,8 +113,7 @@ export default function FieldUnitDetailPage() {
     );
   }
 
-  const now = Date.now();
-  const lockLive = !!unit.lock && unit.lock.lockExpiresAt.toMillis() > now;
+  const lockLive = !!unit.lock && unit.lock.lockExpiresAt.toMillis() > loadedAt;
   const lockedByOther = lockLive && unit.lock?.lockedBy !== user?.uid;
   const lockedByMe = lockLive && unit.lock?.lockedBy === user?.uid;
 
@@ -151,7 +180,14 @@ export default function FieldUnitDetailPage() {
           </CardHeader>
           <CardContent className="grid gap-2 text-sm">
             <Row k="Status Hunian" v={submission.occupancyStatus === "occupied" ? "Berpenghuni" : "Tidak berpenghuni"} />
-            <Row k="PLT / Pelataran" v={submission.pltExists ? "Ada" : "Tidak ada"} />
+            <Row
+              k="PLT / Pelataran"
+              v={formatPltStatus(
+                submission.pltStatus,
+                submission.pltNotes,
+                submission.pltExists,
+              )}
+            />
             <Row k="Kondisi Bangunan" v={submission.buildingConditionLabel || "-"} />
             <Row k="Tipe Bangunan" v={submission.buildingTypeLabel || "-"} />
             {submission.remarks && <Row k="Catatan" v={submission.remarks} />}

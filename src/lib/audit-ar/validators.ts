@@ -22,15 +22,28 @@ export const auditCategorySchema = z.object({
 export type AuditCategoryFormData = z.infer<typeof auditCategorySchema>;
 
 // Field-audit form core fields (photos validated separately).
-export const auditSubmissionSchema = z.object({
-  occupancyStatus: z.enum(["occupied", "not_occupied"], {
-    message: "Status hunian wajib dipilih",
-  }),
-  pltExists: z.boolean(),
-  buildingConditionId: z.string().min(1, "Kondisi bangunan wajib dipilih"),
-  buildingTypeId: z.string().min(1, "Tipe bangunan wajib dipilih"),
-  remarks: z.string().trim().default(""),
-});
+export const auditSubmissionSchema = z
+  .object({
+    occupancyStatus: z.enum(["occupied", "not_occupied"], {
+      message: "Status hunian wajib dipilih",
+    }),
+    pltStatus: z.enum(["exists", "not_exists", "other"], {
+      message: "Status PLT / pelataran wajib dipilih",
+    }),
+    pltNotes: z.string().trim().default(""),
+    buildingConditionId: z.string().min(1, "Kondisi bangunan wajib dipilih"),
+    buildingTypeId: z.string().min(1, "Tipe bangunan wajib dipilih"),
+    remarks: z.string().trim().default(""),
+  })
+  .superRefine((data, ctx) => {
+    if (data.pltStatus === "other" && data.pltNotes.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pltNotes"],
+        message: "Keterangan PLT / pelataran wajib diisi",
+      });
+    }
+  });
 
 export type AuditSubmissionFormData = z.infer<typeof auditSubmissionSchema>;
 

@@ -21,7 +21,7 @@ import { StatusBadge, STATUS_LABELS } from "@/components/audit-ar/status-badge";
 import { getAuditUnits, getSubmission } from "@/lib/audit-ar/firestore";
 import {
   UNIT_AUDIT_STATUSES,
-  OCCUPANCY_PHOTO_FIELDS,
+  formatPltStatus,
   type AuditUnitDoc,
   type UnitAuditStatus,
 } from "@/lib/audit-ar/types";
@@ -70,8 +70,6 @@ export default function SupervisorUnitsPage() {
       );
       const rows = filtered.map((u, i) => {
         const s = subs[i];
-        const linkFor = (key: string) =>
-          s?.attachments.find((a) => a.key === key)?.webViewLink ?? "";
         const row: Record<string, string> = {
           "Nomor Unit": u.unitNumber,
           Proyek: u.projectName,
@@ -86,20 +84,19 @@ export default function SupervisorUnitsPage() {
               ? "Berpenghuni"
               : "Tidak berpenghuni"
             : "",
-          "PLT/Pelataran": s ? (s.pltExists ? "Ada" : "Tidak ada") : "",
+          "PLT/Pelataran": s
+            ? formatPltStatus(s.pltStatus, s.pltNotes, s.pltExists)
+            : "",
           "Kondisi Bangunan": s?.buildingConditionLabel ?? "",
           "Tipe Bangunan": s?.buildingTypeLabel ?? "",
           Catatan: s?.remarks ?? "",
           Reviewer: s?.reviewedByName ?? "",
           "Alasan Penolakan": u.lastRejectionNote ?? "",
+          "Jumlah Foto": s ? String(s.attachments.length) : "",
+          "Foto Audit": (s?.attachments ?? [])
+            .map((a, index) => `${index + 1}. ${a.label}: ${a.webViewLink}`)
+            .join("\n"),
         };
-        for (const f of OCCUPANCY_PHOTO_FIELDS) {
-          row[`Foto ${f.label}`] = linkFor(f.key);
-        }
-        row["Lampiran Tambahan"] = (s?.attachments ?? [])
-          .filter((a) => a.key.startsWith("extra"))
-          .map((a) => a.webViewLink)
-          .join(", ");
         return row;
       });
 

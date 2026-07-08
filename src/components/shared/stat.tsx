@@ -4,7 +4,6 @@ import { cn } from "@/lib/utils";
 export function Stat({
   label,
   value,
-  accent,
   className,
 }: {
   label: string;
@@ -12,19 +11,9 @@ export function Stat({
   accent?: "primary" | "positive" | "negative" | "warning";
   className?: string;
 }) {
-  const accentClass =
-    accent === "primary"
-      ? "text-primary"
-      : accent === "positive"
-        ? "text-emerald-600 dark:text-emerald-400"
-        : accent === "negative"
-          ? "text-destructive"
-          : accent === "warning"
-            ? "text-amber-600 dark:text-amber-400"
-            : "text-foreground";
   return (
     <div className={className}>
-      <div className={cn("text-3xl font-semibold tracking-tight tabular-nums", accentClass)}>
+      <div className="text-3xl font-semibold tracking-tight tabular-nums text-foreground">
         {value}
       </div>
       <div className="mt-1 text-sm text-muted-foreground">{label}</div>

@@ -34,6 +34,28 @@ export type AuditSubmissionStatus = "pending" | "approved" | "rejected";
 
 export type OccupancyStatus = "occupied" | "not_occupied";
 
+export type PltStatus = "exists" | "not_exists" | "other";
+
+export const PLT_STATUS_LABELS: Record<PltStatus, string> = {
+  exists: "Ada PLT",
+  not_exists: "Tidak ada PLT",
+  other: "Lainnya",
+};
+
+export function formatPltStatus(
+  status: PltStatus | undefined,
+  notes?: string | null,
+  fallbackExists?: boolean,
+): string {
+  if (status === "other") {
+    const detail = notes?.trim();
+    return detail ? `Lainnya: ${detail}` : "Lainnya";
+  }
+  if (status) return PLT_STATUS_LABELS[status];
+  if (fallbackExists === undefined) return "-";
+  return fallbackExists ? "Ada PLT" : "Tidak ada PLT";
+}
+
 // ── Draft lock ──
 
 export interface AuditLock {
@@ -125,6 +147,8 @@ export interface AuditSubmissionDoc {
   // Form payload snapshot (immutable)
   occupancyStatus: OccupancyStatus;
   pltExists: boolean; // PLT / pelataran
+  pltStatus?: PltStatus;
+  pltNotes?: string;
   buildingConditionId: string;
   buildingConditionLabel: string;
   buildingTypeId: string;

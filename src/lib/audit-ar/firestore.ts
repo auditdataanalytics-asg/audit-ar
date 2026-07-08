@@ -25,6 +25,7 @@ import type {
   AuditCategoryDoc,
   AuditCategoryType,
   OccupancyStatus,
+  PltStatus,
 } from "./types";
 import type { AuditUnitRow } from "./validators";
 import { normalizeUnitNumber, unitIdFromNumber } from "./unit-id";
@@ -247,6 +248,8 @@ export async function releaseDraftLock(unitId: string, uid: string): Promise<voi
 export interface NewSubmissionPayload {
   occupancyStatus: OccupancyStatus;
   pltExists: boolean;
+  pltStatus: PltStatus;
+  pltNotes: string;
   buildingConditionId: string;
   buildingConditionLabel: string;
   buildingTypeId: string;

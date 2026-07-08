@@ -1,22 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ChevronLeft, Loader2, Send, X } from "lucide-react";
+import { Camera, ChevronLeft, ImageIcon, Loader2, Send, X } from "lucide-react";
 import { toast } from "sonner";
+import { Timestamp } from "firebase/firestore";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 import {
   AlertDialog,
@@ -29,7 +29,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { AttachmentField } from "@/components/audit-ar/attachment-field";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { useAuditLockHeartbeat } from "@/lib/audit-ar/hooks/use-audit-lock";
 import {
@@ -45,7 +44,15 @@ import {
   type AuditCategoryDoc,
   type AuditAttachment,
   type OccupancyStatus,
+  type PltStatus,
 } from "@/lib/audit-ar/types";
+import { compressImage } from "@/lib/audit-ar/google/image-compress";
+
+const PHOTO_LABEL_OTHER = "other";
+const PHOTO_LABEL_OPTIONS = OCCUPANCY_PHOTO_FIELDS.map((f) => ({
+  value: f.key,
+  label: f.label,
+}));
 
 export default function FieldAuditFormPage() {
   const router = useRouter();
@@ -58,42 +65,57 @@ export default function FieldAuditFormPage() {
   const [types, setTypes] = useState<AuditCategoryDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [loadedAt, setLoadedAt] = useState(0);
 
   // form state
   const [occupancy, setOccupancy] = useState<OccupancyStatus | "">("");
-  const [pltExists, setPltExists] = useState(false);
+  const [pltStatus, setPltStatus] = useState<PltStatus | "">("");
+  const [pltNotes, setPltNotes] = useState("");
   const [conditionId, setConditionId] = useState("");
   const [typeId, setTypeId] = useState("");
   const [remarks, setRemarks] = useState("");
   const [attachments, setAttachments] = useState<AuditAttachment[]>([]);
+  const [photoLabelKey, setPhotoLabelKey] = useState(PHOTO_LABEL_OPTIONS[0]?.value ?? "");
+  const [customPhotoLabel, setCustomPhotoLabel] = useState("");
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement>(null);
 
   const ownsLock = useMemo(() => {
-    const now = Date.now();
     return (
       !!unit?.lock &&
       unit.lock.lockedBy === user?.uid &&
-      unit.lock.lockExpiresAt.toMillis() > now
+      unit.lock.lockExpiresAt.toMillis() > loadedAt
     );
-  }, [unit, user?.uid]);
+  }, [loadedAt, unit, user?.uid]);
 
   useAuditLockHeartbeat(unitId, user?.uid ?? null, ownsLock && !submitting);
 
-  const load = useCallback(async () => {
-    if (!unitId) return;
-    const [u, cond, typ] = await Promise.all([
-      getAuditUnit(unitId),
-      getCategories("buildingCondition"),
-      getCategories("buildingType"),
-    ]);
-    setUnit(u);
-    setConditions(cond.filter((c) => c.isActive));
-    setTypes(typ.filter((c) => c.isActive));
-    setLoading(false);
-  }, [unitId]);
-
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+
+    async function loadInitial() {
+      if (!unitId) return;
+      try {
+        const [u, cond, typ] = await Promise.all([
+          getAuditUnit(unitId),
+          getCategories("buildingCondition"),
+          getCategories("buildingType"),
+        ]);
+        if (cancelled) return;
+        setUnit(u);
+        setConditions(cond.filter((c) => c.isActive));
+        setTypes(typ.filter((c) => c.isActive));
+        setLoadedAt(Date.now());
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadInitial();
+    return () => {
+      cancelled = true;
+    };
+  }, [unitId]);
 
   // Redirect out if the lock isn't ours (someone else took it / it expired).
   useEffect(() => {
@@ -111,7 +133,8 @@ export default function FieldAuditFormPage() {
     if (!unit || !user) return;
     const parsed = auditSubmissionSchema.safeParse({
       occupancyStatus: occupancy,
-      pltExists,
+      pltStatus,
+      pltNotes,
       buildingConditionId: conditionId,
       buildingTypeId: typeId,
       remarks,
@@ -120,11 +143,8 @@ export default function FieldAuditFormPage() {
       toast.error(parsed.error.issues[0].message);
       return;
     }
-    const requiredMissing = OCCUPANCY_PHOTO_FIELDS.filter(
-      (f) => f.required && !attachments.some((a) => a.key === f.key),
-    );
-    if (requiredMissing.length > 0) {
-      toast.error(`Foto wajib belum lengkap: ${requiredMissing.map((f) => f.label).join(", ")}`);
+    if (attachments.length === 0) {
+      toast.error("Minimal 1 foto wajib diunggah");
       return;
     }
 
@@ -138,7 +158,9 @@ export default function FieldAuditFormPage() {
         user.displayName || user.email || "Auditor",
         {
           occupancyStatus: parsed.data.occupancyStatus,
-          pltExists: parsed.data.pltExists,
+          pltExists: parsed.data.pltStatus === "exists",
+          pltStatus: parsed.data.pltStatus,
+          pltNotes: parsed.data.pltNotes,
           buildingConditionId: conditionId,
           buildingConditionLabel: condition?.label ?? "",
           buildingTypeId: typeId,
@@ -161,6 +183,77 @@ export default function FieldAuditFormPage() {
     router.replace(`/audit-ar/field/units/${unit.id}`);
   }
 
+  const selectedPhotoOption = PHOTO_LABEL_OPTIONS.find((o) => o.value === photoLabelKey);
+  const selectedPhotoLabel =
+    photoLabelKey === PHOTO_LABEL_OTHER
+      ? customPhotoLabel.trim()
+      : (selectedPhotoOption?.label ?? "");
+
+  async function handlePhotoFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !unit || !user) return;
+    const label = selectedPhotoLabel;
+    if (!label) {
+      toast.error("Pilih atau isi label foto dulu");
+      if (photoInputRef.current) photoInputRef.current.value = "";
+      return;
+    }
+
+    const fieldPrefix =
+      photoLabelKey === PHOTO_LABEL_OTHER ? "photo-other" : photoLabelKey || "photo";
+    const fieldKey = `${fieldPrefix}-${Date.now()}`;
+
+    setUploadingPhoto(true);
+    try {
+      const blob = await compressImage(file);
+      const token = await user.getIdToken();
+      const fd = new FormData();
+      fd.append("file", blob, `${fieldKey}.jpg`);
+      fd.append("unitId", unit.id);
+      fd.append("fieldKey", fieldKey);
+      fd.append("version", String(unit.submissionCount + 1));
+
+      const res = await fetch("/api/audit-ar/attachments/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "upload failed");
+      }
+
+      const data = await res.json();
+      setAttachments((prev) => [
+        ...prev,
+        {
+          key: fieldKey,
+          label,
+          required: false,
+          fileId: data.fileId,
+          webViewLink: data.webViewLink,
+          thumbnailLink: data.thumbnailLink,
+          fileName: data.fileName,
+          mimeType: data.mimeType,
+          uploadedAt: Timestamp.now(),
+          uploadedBy: user.uid,
+          editableAfterSubmit: false,
+        },
+      ]);
+      if (photoLabelKey === PHOTO_LABEL_OTHER) setCustomPhotoLabel("");
+    } catch (err: unknown) {
+      toast.error(
+        err instanceof Error &&
+          err.message === "Google Drive is not configured (missing GOOGLE_OAUTH_* env vars)."
+          ? "Google Drive belum dikonfigurasi"
+          : "Gagal mengunggah foto",
+      );
+    } finally {
+      setUploadingPhoto(false);
+      if (photoInputRef.current) photoInputRef.current.value = "";
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -169,6 +262,9 @@ export default function FieldAuditFormPage() {
     );
   }
   if (!unit) return null;
+
+  const selectedCondition = conditions.find((c) => c.id === conditionId);
+  const selectedType = types.find((c) => c.id === typeId);
 
   return (
     <div className="space-y-5 pb-24">
@@ -205,42 +301,144 @@ export default function FieldAuditFormPage() {
           <div>
             <Label>Foto Indikator Hunian</Label>
             <p className="text-xs text-muted-foreground">
-              Ambil foto sebagai bukti kondisi hunian.
+              Minimal 1 foto. Kamu bisa upload beberapa foto dengan label masing-masing.
             </p>
           </div>
-          {OCCUPANCY_PHOTO_FIELDS.map((f) => (
-            <AttachmentField
-              key={f.key}
-              unitId={unit.id}
-              fieldKey={f.key}
-              label={f.label}
-              required={f.required}
-              version={unit.submissionCount + 1}
-              value={attachments.find((a) => a.key === f.key) ?? null}
-              onChange={(att) =>
-                setAttachments((prev) => {
-                  const rest = prev.filter((a) => a.key !== f.key);
-                  return att ? [...rest, att] : rest;
-                })
-              }
-            />
-          ))}
+
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={handlePhotoFile}
+          />
+
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Select value={photoLabelKey} onValueChange={(v) => setPhotoLabelKey(v ?? "")}>
+                <SelectTrigger className="h-11 w-full">
+                  <span
+                    className={
+                      selectedPhotoOption || photoLabelKey === PHOTO_LABEL_OTHER
+                        ? ""
+                        : "text-muted-foreground"
+                    }
+                  >
+                    {photoLabelKey === PHOTO_LABEL_OTHER
+                      ? "Lainnya"
+                      : (selectedPhotoOption?.label ?? "Pilih label foto")}
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  {PHOTO_LABEL_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value={PHOTO_LABEL_OTHER}>Lainnya</SelectItem>
+                </SelectContent>
+              </Select>
+              {photoLabelKey === PHOTO_LABEL_OTHER && (
+                <Input
+                  value={customPhotoLabel}
+                  onChange={(e) => setCustomPhotoLabel(e.target.value)}
+                  placeholder="Isi label foto"
+                  className="h-11"
+                />
+              )}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11"
+              disabled={uploadingPhoto || !selectedPhotoLabel}
+              onClick={() => photoInputRef.current?.click()}
+            >
+              {uploadingPhoto ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Camera className="mr-1.5 h-4 w-4" />
+              )}
+              Upload Foto
+            </Button>
+          </div>
+
+          {attachments.length === 0 ? (
+            <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+              Belum ada foto.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {attachments.map((attachment) => (
+                <div key={attachment.key} className="flex items-center gap-3 rounded-lg border p-2">
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted">
+                    {attachment.thumbnailLink ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={attachment.thumbnailLink}
+                        alt={attachment.label}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <ImageIcon className="h-5 w-5 text-muted-foreground" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{attachment.label}</p>
+                    <p className="text-xs text-muted-foreground">Terunggah</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9"
+                    onClick={() =>
+                      setAttachments((prev) =>
+                        prev.filter((item) => item.key !== attachment.key),
+                      )
+                    }
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* PLT / building condition / type */}
       <Card className="border-border/50">
         <CardContent className="space-y-4 p-4">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="plt">PLT / Pelataran ada?</Label>
-            <Switch id="plt" checked={pltExists} onCheckedChange={setPltExists} />
+          <div className="space-y-2">
+            <Label>PLT / Pelataran</Label>
+            <RadioGroup
+              value={pltStatus}
+              onValueChange={(v) => setPltStatus(v as PltStatus)}
+              className="grid gap-2 sm:grid-cols-3"
+            >
+              <PltOption value="exists" label="Ada PLT" current={pltStatus} />
+              <PltOption value="not_exists" label="Tidak ada PLT" current={pltStatus} />
+              <PltOption value="other" label="Lainnya" current={pltStatus} />
+            </RadioGroup>
+            {pltStatus === "other" && (
+              <Input
+                value={pltNotes}
+                onChange={(e) => setPltNotes(e.target.value)}
+                placeholder="Isi keterangan lainnya"
+                className="h-11"
+              />
+            )}
           </div>
 
           <div className="space-y-1.5">
             <Label>Kondisi Bangunan</Label>
             <Select value={conditionId} onValueChange={(v) => setConditionId(v ?? "")}>
-              <SelectTrigger className="h-11">
-                <SelectValue placeholder="Pilih kondisi" />
+              <SelectTrigger className="h-11 w-full">
+                <span className={selectedCondition ? "" : "text-muted-foreground"}>
+                  {selectedCondition?.label ?? "Pilih kondisi"}
+                </span>
               </SelectTrigger>
               <SelectContent>
                 {conditions.map((c) => (
@@ -255,8 +453,10 @@ export default function FieldAuditFormPage() {
           <div className="space-y-1.5">
             <Label>Tipe Bangunan</Label>
             <Select value={typeId} onValueChange={(v) => setTypeId(v ?? "")}>
-              <SelectTrigger className="h-11">
-                <SelectValue placeholder="Pilih tipe" />
+              <SelectTrigger className="h-11 w-full">
+                <span className={selectedType ? "" : "text-muted-foreground"}>
+                  {selectedType?.label ?? "Pilih tipe"}
+                </span>
               </SelectTrigger>
               <SelectContent>
                 {types.map((c) => (
@@ -270,9 +470,9 @@ export default function FieldAuditFormPage() {
         </CardContent>
       </Card>
 
-      {/* Remarks + extra attachments */}
+      {/* Remarks */}
       <Card className="border-border/50">
-        <CardContent className="space-y-4 p-4">
+        <CardContent className="p-4">
           <div className="space-y-1.5">
             <Label htmlFor="remarks">Catatan (opsional)</Label>
             <Textarea
@@ -283,20 +483,6 @@ export default function FieldAuditFormPage() {
               rows={3}
             />
           </div>
-          <AttachmentField
-            unitId={unit.id}
-            fieldKey="extra"
-            label="Lampiran tambahan (opsional)"
-            required={false}
-            version={unit.submissionCount + 1}
-            value={attachments.find((a) => a.key.startsWith("extra")) ?? null}
-            onChange={(att) =>
-              setAttachments((prev) => {
-                const rest = prev.filter((a) => !a.key.startsWith("extra"));
-                return att ? [...rest, { ...att, key: "extra-1" }] : rest;
-              })
-            }
-          />
         </CardContent>
       </Card>
 
@@ -356,6 +542,29 @@ function OccupancyOption({
       }`}
     >
       <RadioGroupItem id={`occ-${value}`} value={value} className="sr-only" />
+      {label}
+    </Label>
+  );
+}
+
+function PltOption({
+  value,
+  label,
+  current,
+}: {
+  value: PltStatus;
+  label: string;
+  current: string;
+}) {
+  const active = current === value;
+  return (
+    <Label
+      htmlFor={`plt-${value}`}
+      className={`flex cursor-pointer items-center justify-center rounded-lg border p-3 text-sm font-medium transition-colors ${
+        active ? "border-primary bg-primary/10 text-primary" : "border-border"
+      }`}
+    >
+      <RadioGroupItem id={`plt-${value}`} value={value} className="sr-only" />
       {label}
     </Label>
   );

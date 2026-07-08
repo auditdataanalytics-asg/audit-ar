@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Loader2, ArrowRight } from "lucide-react";
+import { toast } from "sonner";
 
 import { Stat, StatGroup } from "@/components/shared/stat";
 import { getAuditUnits } from "@/lib/audit-ar/firestore";
@@ -13,26 +14,35 @@ export default function FieldDashboardPage() {
   const { user } = useAuditAr();
   const [units, setUnits] = useState<AuditUnitDoc[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedAt, setLoadedAt] = useState(0);
 
   useEffect(() => {
     getAuditUnits()
-      .then(setUnits)
+      .then((nextUnits) => {
+        setUnits(nextUnits);
+        setLoadedAt(Date.now());
+      })
+      .catch(() => {
+        toast.error("Gagal memuat unit audit");
+        setUnits([]);
+        setLoadedAt(Date.now());
+      })
       .finally(() => setLoading(false));
   }, []);
 
   const stats = useMemo(() => {
-    const now = Date.now();
     const available = units.filter(
       (u) =>
         u.status === "not_started" ||
-        (u.status === "draft" && (!u.lock || u.lock.lockExpiresAt.toMillis() < now)),
+        (u.status === "draft" &&
+          (!u.lock || u.lock.lockExpiresAt.toMillis() < loadedAt)),
     ).length;
     const myDrafts = units.filter(
       (u) => u.status === "draft" && u.lock?.lockedBy === user?.uid,
     ).length;
     const rejected = units.filter((u) => u.status === "rejected").length;
     return { available, myDrafts, rejected };
-  }, [units, user?.uid]);
+  }, [loadedAt, units, user?.uid]);
 
   if (loading) {
     return (

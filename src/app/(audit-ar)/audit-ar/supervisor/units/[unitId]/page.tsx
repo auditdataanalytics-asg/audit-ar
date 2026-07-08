@@ -24,7 +24,11 @@ import { StatusBadge } from "@/components/audit-ar/status-badge";
 import { getAuditUnit, getSubmissions, reviewSubmission } from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { formatDateTime } from "@/lib/shared/date-format";
-import type { AuditUnitDoc, AuditSubmissionDoc } from "@/lib/audit-ar/types";
+import {
+  formatPltStatus,
+  type AuditUnitDoc,
+  type AuditSubmissionDoc,
+} from "@/lib/audit-ar/types";
 
 export default function SupervisorUnitDetailPage() {
   const router = useRouter();
@@ -46,8 +50,29 @@ export default function SupervisorUnitDetailPage() {
   }, [unitId]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+
+    async function loadInitial() {
+      if (!unitId) return;
+      try {
+        const u = await getAuditUnit(unitId);
+        if (cancelled) return;
+        setUnit(u);
+        if (u) {
+          const nextSubmissions = await getSubmissions(unitId);
+          if (cancelled) return;
+          setSubmissions(nextSubmissions);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadInitial();
+    return () => {
+      cancelled = true;
+    };
+  }, [unitId]);
 
   const reviewerName = user?.displayName || user?.email || "Supervisor";
 
@@ -231,7 +256,10 @@ function SubmissionCard({ submission: s }: { submission: AuditSubmissionDoc }) {
         )}
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Status Hunian" value={s.occupancyStatus === "occupied" ? "Berpenghuni" : "Tidak berpenghuni"} />
-          <Field label="PLT / Pelataran" value={s.pltExists ? "Ada" : "Tidak ada"} />
+          <Field
+            label="PLT / Pelataran"
+            value={formatPltStatus(s.pltStatus, s.pltNotes, s.pltExists)}
+          />
           <Field label="Kondisi Bangunan" value={s.buildingConditionLabel || "-"} />
           <Field label="Tipe Bangunan" value={s.buildingTypeLabel || "-"} />
         </div>

@@ -44,3 +44,6 @@ service-account.json
 next-env.d.ts
 .vercel
 .claude
+*CLAUDE*
+CLAUDE.md
+AGENTS.md

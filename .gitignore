@@ -43,3 +43,4 @@ service-account.json
 *.tsbuildinfo
 next-env.d.ts
 .vercel
+.claude

@@ -41,6 +41,23 @@ export function useAuth(): AuthState {
           (snap) => {
             const data = snap.exists() ? (snap.data() as UserDoc) : null;
             const role = data?.role ?? "user";
+            const auditRole = data?.modules?.auditAr?.enabled
+              ? data.modules.auditAr.role
+              : null;
+
+            if (auditRole) {
+              void user
+                .getIdTokenResult()
+                .then((token) => {
+                  if (token.claims.auditRole !== auditRole) {
+                    return user.getIdToken(true);
+                  }
+                })
+                .catch(() => {
+                  // Best effort only; Firestore rules will still enforce claims.
+                });
+            }
+
             setState({
               user,
               loading: false,

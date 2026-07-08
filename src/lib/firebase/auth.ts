@@ -15,6 +15,25 @@ import { getClientAuth, getClientDb } from "./config";
 import type { UserDoc } from "@/lib/shared/types";
 
 const googleProvider = new GoogleAuthProvider();
+const DEFAULT_AUDIT_ROLE = "supervisor";
+const DEFAULT_ROLE_GRANTER = "default-signup";
+
+function defaultAuditModules() {
+  return {
+    auditAr: {
+      enabled: true,
+      role: DEFAULT_AUDIT_ROLE,
+      grantedAt: serverTimestamp(),
+      grantedBy: DEFAULT_ROLE_GRANTER,
+    },
+  };
+}
+
+type NewUserDoc = Omit<UserDoc, "createdAt" | "lastLoginAt" | "modules"> & {
+  createdAt: ReturnType<typeof serverTimestamp>;
+  lastLoginAt: ReturnType<typeof serverTimestamp>;
+  modules: ReturnType<typeof defaultAuditModules>;
+};
 
 export async function signUp(
   email: string,
@@ -28,10 +47,7 @@ export async function signUp(
   const { user } = await createUserWithEmailAndPassword(auth, email, password);
   await updateProfile(user, { displayName });
 
-  const userDoc: Omit<UserDoc, "createdAt" | "lastLoginAt"> & {
-    createdAt: ReturnType<typeof serverTimestamp>;
-    lastLoginAt: ReturnType<typeof serverTimestamp>;
-  } = {
+  const userDoc: NewUserDoc = {
     uid: user.uid,
     email: user.email!,
     displayName,
@@ -39,6 +55,7 @@ export async function signUp(
     createdAt: serverTimestamp(),
     lastLoginAt: serverTimestamp(),
     isDisabled: false,
+    modules: defaultAuditModules(),
   };
 
   await setDoc(doc(db, "users", user.uid), userDoc);
@@ -76,6 +93,7 @@ export async function signInWithGoogle(): Promise<User> {
       createdAt: serverTimestamp(),
       lastLoginAt: serverTimestamp(),
       isDisabled: false,
+      modules: defaultAuditModules(),
     });
   } else {
     await updateDoc(userRef, { lastLoginAt: serverTimestamp() });

@@ -81,6 +81,15 @@ function pick(
   return byPos !== undefined ? String(row[byPos] ?? "").trim() : "";
 }
 
+function isPermissionError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "permission-denied"
+  );
+}
+
 export default function UnitImportPage() {
   const router = useRouter();
   const { user } = useAuditAr();
@@ -156,11 +165,19 @@ export default function UnitImportPage() {
 
         setRows(parsed);
         if (parsed.length === 0) toast.error("File kosong atau format tidak sesuai");
-      } catch {
-        toast.error("Gagal membaca file. Pastikan format Excel benar.");
+      } catch (error) {
+        if (isPermissionError(error)) {
+          toast.error("Akses Firestore ditolak. Logout lalu login lagi agar role terbaru aktif.");
+        } else {
+          toast.error("Gagal membaca file. Pastikan format Excel benar.");
+        }
       } finally {
         setAnalyzing(false);
       }
+    };
+    reader.onerror = () => {
+      setAnalyzing(false);
+      toast.error("Gagal membaca file. Pastikan file bisa diakses browser.");
     };
     reader.readAsArrayBuffer(file);
   }

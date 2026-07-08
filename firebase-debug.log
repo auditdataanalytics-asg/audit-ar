@@ -1,0 +1,71 @@
+[debug] [2026-07-08T07:06:16.388Z] ----------------------------------------------------------------------
+[debug] [2026-07-08T07:06:16.391Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\abina\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js deploy --only firestore:rules,firestore:indexes --project audit-ar-b05a7
+[debug] [2026-07-08T07:06:16.392Z] CLI Version:   14.6.0
+[debug] [2026-07-08T07:06:16.392Z] Platform:      win32
+[debug] [2026-07-08T07:06:16.392Z] Node Version:  v22.14.0
+[debug] [2026-07-08T07:06:16.392Z] Time:          Wed Jul 08 2026 14:06:16 GMT+0700 (Western Indonesia Time)
+[debug] [2026-07-08T07:06:16.392Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-08T07:06:16.395Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-07-08T07:06:16.639Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-08T07:06:16.639Z] > authorizing via signed-in user (abinayakairos@gmail.com)
+[debug] [2026-07-08T07:06:16.640Z] [iam] checking project audit-ar-b05a7 for permissions ["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]
+[debug] [2026-07-08T07:06:16.642Z] Checked if tokens are valid: false, expires at: 1783331457679
+[debug] [2026-07-08T07:06:16.642Z] Checked if tokens are valid: false, expires at: 1783331457679
+[debug] [2026-07-08T07:06:16.642Z] > refreshing access token with scopes: []
+[debug] [2026-07-08T07:06:16.644Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-07-08T07:06:16.644Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-07-08T07:06:16.745Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-07-08T07:06:16.745Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-07-08T07:06:16.754Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/audit-ar-b05a7:testIamPermissions [none]
+[debug] [2026-07-08T07:06:16.755Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/audit-ar-b05a7:testIamPermissions x-goog-quota-user=projects/audit-ar-b05a7
+[debug] [2026-07-08T07:06:16.755Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/audit-ar-b05a7:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]}
+[debug] [2026-07-08T07:06:17.152Z] <<< [apiv2][status] GET https://firebase-public.firebaseio.com/cli.json 200
+[debug] [2026-07-08T07:06:17.152Z] <<< [apiv2][body] GET https://firebase-public.firebaseio.com/cli.json {"cloudBuildErrorAfter":1594252800000,"cloudBuildWarnAfter":1590019200000,"defaultNode10After":1594252800000,"minVersion":"3.0.5","node8DeploysDisabledAfter":1613390400000,"node8RuntimeDisabledAfter":1615809600000,"node8WarnAfter":1600128000000}
+[debug] [2026-07-08T07:06:17.898Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/audit-ar-b05a7:testIamPermissions 200
+[debug] [2026-07-08T07:06:17.898Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/audit-ar-b05a7:testIamPermissions {}
+[debug] [2026-07-08T07:06:17.898Z] [iam] error while checking permissions, command may fail: Authorization failed. This account is missing the following required permissions on project audit-ar-b05a7:
+
+  datastore.indexes.create
+  datastore.indexes.delete
+  datastore.indexes.list
+  datastore.indexes.update
+  firebase.projects.get
+[info] 
+[info] === Deploying to 'audit-ar-b05a7'...
+[info] 
+[info] i  deploying firestore 
+[info] i  firestore: reading indexes from firestore.indexes.json... 
+[info] i  cloud.firestore: checking firestore.rules for compilation errors... 
+[debug] [2026-07-08T07:06:17.902Z] Checked if tokens are valid: true, expires at: 1783497975745
+[debug] [2026-07-08T07:06:17.902Z] Checked if tokens are valid: true, expires at: 1783497975745
+[debug] [2026-07-08T07:06:17.903Z] >>> [apiv2][query] POST https://firebaserules.googleapis.com/v1/projects/audit-ar-b05a7:test [none]
+[debug] [2026-07-08T07:06:17.903Z] >>> [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/audit-ar-b05a7:test [omitted]
+[debug] [2026-07-08T07:06:19.244Z] <<< [apiv2][status] POST https://firebaserules.googleapis.com/v1/projects/audit-ar-b05a7:test 403
+[debug] [2026-07-08T07:06:19.244Z] <<< [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/audit-ar-b05a7:test {"error":{"code":403,"message":"The caller does not have permission","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"IAM_PERMISSION_DENIED","domain":"iam.googleapis.com","metadata":{"error_info_id":"CiQwMTlmNDA4Yy04NWM3LTczMzYtYmU4ZC00MmZjMGQ2M2E2ZTcSF3Byb2plY3RzL2F1ZGl0LWFyLWIwNWE3","troubleshooter_url":"https://console.cloud.google.com/iam-admin/troubleshooter/summary;errorId=CiQwMTlmNDA4Yy04NWM3LTczMzYtYmU4ZC00MmZjMGQ2M2E2ZTcSF3Byb2plY3RzL2F1ZGl0LWFyLWIwNWE3","permission":"firebaserules.rulesets.test"}}]}}
+[error] 
+[error] Error: Request to https://firebaserules.googleapis.com/v1/projects/audit-ar-b05a7:test had HTTP Error: 403, The caller does not have permission
+[debug] [2026-07-08T07:06:19.363Z] Error Context: {
+  "body": {
+    "error": {
+      "code": 403,
+      "message": "The caller does not have permission",
+      "status": "PERMISSION_DENIED",
+      "details": [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          "reason": "IAM_PERMISSION_DENIED",
+          "domain": "iam.googleapis.com",
+          "metadata": {
+            "error_info_id": "CiQwMTlmNDA4Yy04NWM3LTczMzYtYmU4ZC00MmZjMGQ2M2E2ZTcSF3Byb2plY3RzL2F1ZGl0LWFyLWIwNWE3",
+            "troubleshooter_url": "https://console.cloud.google.com/iam-admin/troubleshooter/summary;errorId=CiQwMTlmNDA4Yy04NWM3LTczMzYtYmU4ZC00MmZjMGQ2M2E2ZTcSF3Byb2plY3RzL2F1ZGl0LWFyLWIwNWE3",
+            "permission": "firebaserules.rulesets.test"
+          }
+        }
+      ]
+    }
+  },
+  "response": {
+    "statusCode": 403
+  }
+}

@@ -7,7 +7,7 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() && request.auth.token.role == "admin";
+      return isAuthenticated() && request.auth.token.get("role", null) == "admin";
     }
 
     function isOwner(userId) {
@@ -16,7 +16,19 @@ service cloud.firestore {
 
     // ── Audit AR module roles ──
     function auditRole() {
-      return isAuthenticated() ? request.auth.token.auditRole : null;
+      let tokenRole = isAuthenticated()
+        ? request.auth.token.get("auditRole", null)
+        : null;
+      let data = isAuthenticated()
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
+        : {};
+      let modules = data.get("modules", {});
+      let auditAr = modules.get("auditAr", {});
+      let docRole = auditAr.get("enabled", false) == true
+        ? auditAr.get("role", null)
+        : null;
+      return docRole != null ? docRole : tokenRole;
     }
     function isSupervisor() {
       return auditRole() == "supervisor";
@@ -31,11 +43,31 @@ service cloud.firestore {
     function hasAuditAccess() {
       return isSupervisor() || isFieldAudit();
     }
+    function isDefaultSupervisorModule() {
+      return request.resource.data.modules.keys().hasOnly(['auditAr'])
+        && request.resource.data.modules.auditAr.keys().hasOnly([
+          'enabled', 'role', 'grantedAt', 'grantedBy'
+        ])
+        && request.resource.data.modules.auditAr.enabled == true
+        && request.resource.data.modules.auditAr.role == "supervisor"
+        && request.resource.data.modules.auditAr.grantedBy == "default-signup";
+    }
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'role', 'createdAt', 'lastLoginAt',
+          'isDisabled', 'modules'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.role == "user"
+        && request.resource.data.isDisabled == false
+        && isDefaultSupervisorModule();
+      allow update: if isAdmin()
+        || (isOwner(userId)
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['displayName', 'lastLoginAt']));
       allow delete: if isAdmin();
     }
 

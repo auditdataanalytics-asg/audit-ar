@@ -201,23 +201,19 @@ export async function acquireDraftLock(
   }
 }
 
-/** Heartbeat — extend the lock if still owned by this user. */
-export async function renewDraftLock(unitId: string, uid: string): Promise<boolean> {
+/**
+ * Heartbeat — extend the lock TTL. A blind, non-transactional field update
+ * (only `lock.lockExpiresAt`) so it never contends with the frequent draft
+ * auto-save on the same document. Security rules ensure only the lock owner may
+ * write here, so no client-side ownership read is needed.
+ */
+export async function renewDraftLock(unitId: string): Promise<boolean> {
   const ref = doc(db(), "auditUnits", unitId);
   try {
-    return await runTransaction(db(), async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists()) return false;
-      const data = snap.data() as AuditUnitDoc;
-      if (!data.lock || data.lock.lockedBy !== uid) return false;
-      tx.update(ref, {
-        lock: {
-          ...data.lock,
-          lockExpiresAt: Timestamp.fromMillis(Date.now() + LOCK_TTL_MS),
-        },
-      });
-      return true;
+    await updateDoc(ref, {
+      "lock.lockExpiresAt": Timestamp.fromMillis(Date.now() + LOCK_TTL_MS),
     });
+    return true;
   } catch {
     return false;
   }

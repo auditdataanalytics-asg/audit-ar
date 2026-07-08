@@ -91,6 +91,8 @@ export interface AuditUnitDoc {
 
   driveFolderId: string | null; // per-unit Drive folder (lazily created)
 
+  draft?: AuditDraft | null; // in-progress field-audit draft (fields + uploaded photos)
+
   createdAt: Timestamp;
   updatedAt: Timestamp;
   importBatchId: string; // which import created/last-touched this row
@@ -123,6 +125,20 @@ export interface AuditAttachment {
   uploadedAt: Timestamp;
   uploadedBy: string;
   editableAfterSubmit: boolean;
+}
+
+// ── In-progress draft (persisted on the unit doc while a field auditor works) ──
+
+export interface AuditDraft {
+  occupancyStatus: OccupancyStatus | "";
+  pltStatus: PltStatus | "";
+  pltNotes: string;
+  buildingConditionId: string;
+  buildingTypeId: string;
+  remarks: string;
+  attachments: AuditAttachment[];
+  updatedBy: string; // field-audit uid who owns this draft
+  updatedAt: Timestamp;
 }
 
 // ── Submission (immutable history entry) — subcollection of the unit ──

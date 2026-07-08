@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Camera, ChevronLeft, ImageIcon, Loader2, Send, X } from "lucide-react";
+import { Camera, ChevronLeft, ImageIcon, Loader2, Send, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Timestamp } from "firebase/firestore";
 
@@ -29,13 +29,20 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { useAuditLockHeartbeat } from "@/lib/audit-ar/hooks/use-audit-lock";
 import {
   getAuditUnit,
   getCategories,
   createSubmission,
-  releaseDraftLock,
+  saveDraft,
+  deleteDraft,
 } from "@/lib/audit-ar/firestore";
 import { auditSubmissionSchema } from "@/lib/audit-ar/validators";
 import {
@@ -54,6 +61,11 @@ const PHOTO_LABEL_OPTIONS = OCCUPANCY_PHOTO_FIELDS.map((f) => ({
   value: f.key,
   label: f.label,
 }));
+
+// Google Drive thumbnails carry a size suffix (e.g. "=s220"); bump it for a larger preview.
+function enlargeThumbnail(url: string): string {
+  return url.replace(/=s\d+[-\w]*$/, "=s1200").replace(/=w\d+-h\d+[-\w]*$/, "=s1200");
+}
 
 export default function FieldAuditFormPage() {
   const router = useRouter();
@@ -81,6 +93,8 @@ export default function FieldAuditFormPage() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+  const [preview, setPreview] = useState<AuditAttachment | null>(null);
+  const hydratedRef = useRef(false);
 
   const ownsLock = useMemo(() => {
     return (
@@ -131,6 +145,60 @@ export default function FieldAuditFormPage() {
     }
   }, [loading, unit, user, router]);
 
+  // Hydrate the form from a previously saved draft (owned by this user).
+  useEffect(() => {
+    if (hydratedRef.current || !unit || !user) return;
+    const d = unit.draft;
+    if (d && d.updatedBy === user.uid) {
+      setOccupancy(d.occupancyStatus ?? "");
+      setPltStatus(d.pltStatus ?? "");
+      setPltNotes(d.pltNotes ?? "");
+      setConditionId(d.buildingConditionId ?? "");
+      setTypeId(d.buildingTypeId ?? "");
+      setRemarks(d.remarks ?? "");
+      setAttachments(d.attachments ?? []);
+    }
+    hydratedRef.current = true;
+  }, [unit, user]);
+
+  const persistDraft = useCallback(
+    async (attachmentsSnapshot: AuditAttachment[]) => {
+      if (!unit || !user) return;
+      try {
+        await saveDraft(unit.id, user.uid, {
+          occupancyStatus: occupancy,
+          pltStatus,
+          pltNotes,
+          buildingConditionId: conditionId,
+          buildingTypeId: typeId,
+          remarks,
+          attachments: attachmentsSnapshot,
+        });
+      } catch {
+        // best-effort; the next change re-attempts the save
+      }
+    },
+    [unit, user, occupancy, pltStatus, pltNotes, conditionId, typeId, remarks],
+  );
+
+  // Auto-save the draft (debounced) whenever the form changes, once hydrated.
+  useEffect(() => {
+    if (!hydratedRef.current || !ownsLock || submitting) return;
+    const t = setTimeout(() => void persistDraft(attachments), 800);
+    return () => clearTimeout(t);
+  }, [
+    occupancy,
+    pltStatus,
+    pltNotes,
+    conditionId,
+    typeId,
+    remarks,
+    attachments,
+    ownsLock,
+    submitting,
+    persistDraft,
+  ]);
+
   async function handleSubmit() {
     if (!unit || !user) return;
     const parsed = auditSubmissionSchema.safeParse({
@@ -179,10 +247,15 @@ export default function FieldAuditFormPage() {
     }
   }
 
-  async function handleCancel() {
+  async function handleDeleteDraft() {
     if (!unit || !user) return;
-    await releaseDraftLock(unit.id, user.uid);
-    router.replace(`/audit-ar/field/units/${unit.id}`);
+    try {
+      await deleteDraft(unit.id, user.uid);
+      toast.success("Draft dihapus");
+      router.replace(`/audit-ar/field/units/${unit.id}`);
+    } catch {
+      toast.error("Gagal menghapus draft");
+    }
   }
 
   const selectedPhotoOption = PHOTO_LABEL_OPTIONS.find((o) => o.value === photoLabelKey);
@@ -227,22 +300,22 @@ export default function FieldAuditFormPage() {
       }
 
       const data = await res.json();
-      setAttachments((prev) => [
-        ...prev,
-        {
-          key: fieldKey,
-          label,
-          required: false,
-          fileId: data.fileId,
-          webViewLink: data.webViewLink,
-          thumbnailLink: data.thumbnailLink,
-          fileName: data.fileName,
-          mimeType: data.mimeType,
-          uploadedAt: Timestamp.now(),
-          uploadedBy: user.uid,
-          editableAfterSubmit: false,
-        },
-      ]);
+      const nextAttachment: AuditAttachment = {
+        key: fieldKey,
+        label,
+        required: false,
+        fileId: data.fileId,
+        webViewLink: data.webViewLink,
+        thumbnailLink: data.thumbnailLink,
+        fileName: data.fileName,
+        mimeType: data.mimeType,
+        uploadedAt: Timestamp.now(),
+        uploadedBy: user.uid,
+        editableAfterSubmit: false,
+      };
+      const next = [...attachments, nextAttachment];
+      setAttachments(next);
+      void persistDraft(next);
       if (photoLabelKey === PHOTO_LABEL_OTHER) setCustomPhotoLabel("");
     } catch (err: unknown) {
       toast.error(
@@ -400,7 +473,12 @@ export default function FieldAuditFormPage() {
             <div className="space-y-2">
               {attachments.map((attachment) => (
                 <div key={attachment.key} className="flex items-center gap-3 rounded-lg border p-2">
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted">
+                  <button
+                    type="button"
+                    onClick={() => setPreview(attachment)}
+                    aria-label="Pratinjau foto"
+                    className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted"
+                  >
                     {attachment.thumbnailLink ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -411,21 +489,25 @@ export default function FieldAuditFormPage() {
                     ) : (
                       <ImageIcon className="h-5 w-5 text-muted-foreground" />
                     )}
-                  </div>
-                  <div className="min-w-0 flex-1">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreview(attachment)}
+                    className="min-w-0 flex-1 text-left"
+                  >
                     <p className="truncate text-sm font-medium">{attachment.label}</p>
-                    <p className="text-xs text-muted-foreground">Terunggah</p>
-                  </div>
+                    <p className="text-xs text-muted-foreground">Ketuk untuk pratinjau</p>
+                  </button>
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon"
                     className="h-9 w-9"
-                    onClick={() =>
-                      setAttachments((prev) =>
-                        prev.filter((item) => item.key !== attachment.key),
-                      )
-                    }
+                    onClick={() => {
+                      const next = attachments.filter((item) => item.key !== attachment.key);
+                      setAttachments(next);
+                      void persistDraft(next);
+                    }}
                   >
                     <X className="h-4 w-4" />
                   </Button>
@@ -532,21 +614,22 @@ export default function FieldAuditFormPage() {
           <AlertDialog>
             <AlertDialogTrigger
               render={
-                <Button variant="outline" className="h-11" disabled={submitting}>
-                  <X className="h-4 w-4" />
+                <Button variant="outline" className="h-11 text-destructive" disabled={submitting}>
+                  <Trash2 className="h-4 w-4" />
                 </Button>
               }
             />
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>Batalkan draft?</AlertDialogTitle>
+                <AlertDialogTitle>Hapus draft?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Isian yang belum dikirim akan hilang dan unit kembali tersedia untuk auditor lain.
+                  Semua isian dan foto yang sudah diunggah untuk draft ini akan dihapus permanen.
+                  Tindakan ini tidak bisa dibatalkan.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Lanjut Isi</AlertDialogCancel>
-                <AlertDialogAction onClick={handleCancel}>Ya, Batalkan</AlertDialogAction>
+                <AlertDialogCancel>Batal</AlertDialogCancel>
+                <AlertDialogAction onClick={handleDeleteDraft}>Hapus Draft</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -560,6 +643,38 @@ export default function FieldAuditFormPage() {
           </Button>
         </div>
       </div>
+
+      {/* Photo preview lightbox */}
+      <Dialog open={!!preview} onOpenChange={(open) => !open && setPreview(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="truncate pr-8">{preview?.label}</DialogTitle>
+          </DialogHeader>
+          {preview &&
+            (preview.thumbnailLink ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={enlargeThumbnail(preview.thumbnailLink)}
+                alt={preview.label}
+                className="max-h-[70vh] w-full rounded-md object-contain"
+              />
+            ) : (
+              <div className="flex h-40 items-center justify-center rounded-md border bg-muted">
+                <ImageIcon className="h-8 w-8 text-muted-foreground" />
+              </div>
+            ))}
+          {preview?.webViewLink && (
+            <a
+              href={preview.webViewLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline"
+            >
+              Buka ukuran penuh di Drive
+            </a>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -581,11 +696,15 @@ function OccupancyOption({
   return (
     <Label
       htmlFor={`occ-${value}`}
-      className={`flex min-h-[3.25rem] cursor-pointer items-center justify-center text-balance rounded-lg border px-2 py-3 text-center text-sm font-medium leading-tight transition-colors ${
+      className={`relative flex h-14 cursor-pointer items-center justify-center text-balance rounded-lg border px-2 text-center text-sm font-medium leading-tight transition-colors ${
         active ? "border-primary bg-primary/10 text-primary" : "border-border"
       }`}
     >
-      <RadioGroupItem id={`occ-${value}`} value={value} className="sr-only" />
+      <RadioGroupItem
+        id={`occ-${value}`}
+        value={value}
+        className="absolute size-0 opacity-0"
+      />
       {label}
     </Label>
   );

@@ -243,6 +243,47 @@ export async function releaseDraftLock(unitId: string, uid: string): Promise<voi
   }
 }
 
+// ── Draft persistence (in-progress field-audit work) ──
+
+export interface DraftPayload {
+  occupancyStatus: OccupancyStatus | "";
+  pltStatus: PltStatus | "";
+  pltNotes: string;
+  buildingConditionId: string;
+  buildingTypeId: string;
+  remarks: string;
+  attachments: AuditAttachment[];
+}
+
+/** Persist the in-progress draft (fields + uploaded photo refs) on the unit doc. */
+export async function saveDraft(
+  unitId: string,
+  uid: string,
+  draft: DraftPayload,
+): Promise<void> {
+  await updateDoc(doc(db(), "auditUnits", unitId), {
+    draft: { ...draft, updatedBy: uid, updatedAt: serverTimestamp() },
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Discard the draft: clear draft data + lock, and free a fresh draft back to not_started. */
+export async function deleteDraft(unitId: string, uid: string): Promise<void> {
+  const ref = doc(db(), "auditUnits", unitId);
+  await runTransaction(db(), async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return;
+    const data = snap.data() as AuditUnitDoc;
+    if (data.lock && data.lock.lockedBy !== uid) return; // held by someone else
+    tx.update(ref, {
+      draft: null,
+      lock: null,
+      status: data.status === "draft" ? "not_started" : data.status,
+      updatedAt: serverTimestamp(),
+    });
+  });
+}
+
 // ── Submissions (immutable history) ──
 
 export interface NewSubmissionPayload {
@@ -294,6 +335,7 @@ export async function createSubmission(
     submissionCount: version,
     lastSubmittedAt: serverTimestamp(),
     lock: null,
+    draft: null,
     updatedAt: serverTimestamp(),
   });
   await batch.commit();

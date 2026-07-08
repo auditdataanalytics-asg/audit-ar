@@ -82,7 +82,8 @@ service cloud.firestore {
         || (isFieldAudit()
             && request.resource.data.diff(resource.data).affectedKeys()
                  .hasOnly(['status', 'lock', 'currentSubmissionId',
-                           'submissionCount', 'lastSubmittedAt', 'updatedAt'])
+                           'submissionCount', 'lastSubmittedAt', 'updatedAt',
+                           'draft'])
             && request.resource.data.status in
                  ['not_started', 'draft', 'pending', 'rejected']
             && (request.resource.data.lock == null

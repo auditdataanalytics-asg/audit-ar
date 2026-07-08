@@ -10,13 +10,30 @@ import {
   PencilLine,
   RotateCcw,
   ExternalLink,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { StatusBadge } from "@/components/audit-ar/status-badge";
-import { getAuditUnit, getSubmission, acquireDraftLock } from "@/lib/audit-ar/firestore";
+import {
+  getAuditUnit,
+  getSubmission,
+  acquireDraftLock,
+  deleteDraft,
+} from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { formatDateTime } from "@/lib/shared/date-format";
 import {
@@ -98,6 +115,17 @@ export default function FieldUnitDetailPage() {
     }
   }
 
+  async function handleDeleteDraft() {
+    if (!unit || !user) return;
+    try {
+      await deleteDraft(unit.id, user.uid);
+      toast.success("Draft dihapus");
+      load();
+    } catch {
+      toast.error("Gagal menghapus draft");
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -116,6 +144,7 @@ export default function FieldUnitDetailPage() {
   const lockLive = !!unit.lock && unit.lock.lockExpiresAt.toMillis() > loadedAt;
   const lockedByOther = lockLive && unit.lock?.lockedBy !== user?.uid;
   const lockedByMe = lockLive && unit.lock?.lockedBy === user?.uid;
+  const hasMyDraft = !!unit.draft && unit.draft.updatedBy === user?.uid;
 
   const master: [string, string][] = [
     ["Proyek", unit.projectName],
@@ -226,22 +255,48 @@ export default function FieldUnitDetailPage() {
             {unit.status === "pending" ? "Menunggu review supervisor" : "Sudah disetujui"}
           </Button>
         ) : (
-          <Button className="w-full h-11" onClick={handleStart} disabled={acquiring}>
-            {acquiring ? (
-              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-            ) : unit.status === "rejected" ? (
-              <RotateCcw className="mr-1.5 h-4 w-4" />
-            ) : lockedByMe ? (
-              <PencilLine className="mr-1.5 h-4 w-4" />
-            ) : (
-              <PlayCircle className="mr-1.5 h-4 w-4" />
+          <div className="space-y-2">
+            <Button className="w-full h-11" onClick={handleStart} disabled={acquiring}>
+              {acquiring ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : unit.status === "rejected" ? (
+                <RotateCcw className="mr-1.5 h-4 w-4" />
+              ) : lockedByMe || hasMyDraft ? (
+                <PencilLine className="mr-1.5 h-4 w-4" />
+              ) : (
+                <PlayCircle className="mr-1.5 h-4 w-4" />
+              )}
+              {unit.status === "rejected"
+                ? "Revisi & Kirim Ulang"
+                : lockedByMe || hasMyDraft
+                  ? "Lanjutkan Draft"
+                  : "Mulai Audit"}
+            </Button>
+            {hasMyDraft && (
+              <AlertDialog>
+                <AlertDialogTrigger
+                  render={
+                    <Button variant="ghost" className="h-9 w-full text-destructive">
+                      <Trash2 className="mr-1.5 h-4 w-4" />
+                      Hapus Draft
+                    </Button>
+                  }
+                />
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Hapus draft?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Semua isian dan foto yang sudah diunggah untuk draft ini akan dihapus permanen.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Batal</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleDeleteDraft}>Hapus Draft</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             )}
-            {unit.status === "rejected"
-              ? "Revisi & Kirim Ulang"
-              : lockedByMe
-                ? "Lanjutkan Draft"
-                : "Mulai Audit"}
-          </Button>
+          </div>
         )}
       </div>
     </div>

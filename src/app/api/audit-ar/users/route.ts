@@ -41,3 +41,51 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+
+// Supervisor-only: permanently delete a user account (Firestore doc + Auth user).
+export async function DELETE(request: NextRequest) {
+  try {
+    const adminAuth = getAdminAuth();
+
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const token = authHeader.split("Bearer ")[1];
+    const decoded = await adminAuth.verifyIdToken(token);
+
+    const db = getAdminDb();
+    const callerSnap = await db.collection("users").doc(decoded.uid).get();
+    const callerAudit = callerSnap.data()?.modules?.auditAr;
+    if (!callerSnap.exists || !callerAudit?.enabled || callerAudit.role !== "supervisor") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const { uid } = (await request.json()) as { uid?: string };
+    if (!uid) {
+      return NextResponse.json({ error: "Invalid uid" }, { status: 400 });
+    }
+    if (uid === decoded.uid) {
+      return NextResponse.json(
+        { error: "Tidak bisa menghapus akun sendiri" },
+        { status: 400 },
+      );
+    }
+
+    // Remove the Firestore profile, then the Auth account.
+    await db.collection("users").doc(uid).delete();
+    try {
+      await adminAuth.deleteUser(uid);
+    } catch (e: any) {
+      // If the Auth user is already gone, the Firestore cleanup above is enough.
+      if (e?.code !== "auth/user-not-found") throw e;
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    return NextResponse.json(
+      { error: error.message || "Internal server error" },
+      { status: 500 },
+    );
+  }
+}

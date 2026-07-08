@@ -66,7 +66,19 @@ export default function RegisterPage() {
 
   return (
     <>
-      <div className="mb-8 text-center">
+      <div className="mb-8 flex flex-col items-center text-center">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo-color.png"
+          alt="Agung Sedayu Group — Internal Audit Division"
+          className="mb-6 h-16 w-auto dark:hidden"
+        />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo-white.png"
+          alt="Agung Sedayu Group — Internal Audit Division"
+          className="mb-6 hidden h-16 w-auto dark:block"
+        />
         <h1 className="font-heading text-2xl font-bold tracking-tight">Buat Akun</h1>
         <p className="mt-2 text-sm text-muted-foreground">Audit Data Analytics</p>
       </div>

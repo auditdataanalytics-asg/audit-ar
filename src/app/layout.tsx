@@ -30,6 +30,10 @@ export const metadata: Metadata = {
   },
   description:
     "Audit Account Receivable — aplikasi audit unit properti di lapangan.",
+  icons: {
+    icon: "/icon-color.png",
+    apple: "/icon-color.png",
+  },
 };
 
 export default function RootLayout({

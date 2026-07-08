@@ -33,8 +33,12 @@ export default function FieldLayout({
     <AuditArGuard requireRole="fieldAudit">
       <div className="flex min-h-screen flex-col bg-muted/20">
         <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur">
-          <Link href="/" className="font-heading text-sm font-semibold hover:text-primary">
-            Audit AR
+          <Link href="/" className="flex items-center gap-2 hover:opacity-80">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/icon-color.png" alt="" className="h-7 w-7 dark:hidden" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/icon-white.png" alt="" className="hidden h-7 w-7 dark:block" />
+            <span className="font-heading text-sm font-semibold">Audit AR</span>
           </Link>
           <div className="ml-auto flex items-center gap-1">
             {isSupervisor && (

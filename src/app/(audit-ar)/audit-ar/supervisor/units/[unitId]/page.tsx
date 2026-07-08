@@ -171,52 +171,6 @@ export default function SupervisorUnitDetailPage() {
         </CardContent>
       </Card>
 
-      {unit.status === "pending" && unit.currentSubmissionId && (
-        <Card className="border-primary/30 bg-primary/5">
-          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm font-medium">Audit ini menunggu keputusanmu.</p>
-            <div className="flex gap-2">
-              <AlertDialog>
-                <AlertDialogTrigger
-                  render={
-                    <Button variant="outline" className="text-destructive" disabled={reviewing}>
-                      <X className="mr-1.5 h-4 w-4" />
-                      Tolak
-                    </Button>
-                  }
-                />
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Tolak audit ini?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Berikan alasan penolakan agar Field Audit bisa merevisi.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <Textarea
-                    value={rejectNote}
-                    onChange={(e) => setRejectNote(e.target.value)}
-                    placeholder="Alasan penolakan..."
-                    rows={3}
-                  />
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Batal</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleReject}>Tolak Audit</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-              <Button onClick={handleApprove} disabled={reviewing}>
-                {reviewing ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <Check className="mr-1.5 h-4 w-4" />
-                )}
-                Setujui
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       <div>
         <h2 className="mb-3 font-heading text-sm font-semibold">
           Riwayat Audit ({submissions.length})
@@ -226,7 +180,21 @@ export default function SupervisorUnitDetailPage() {
         ) : (
           <div className="space-y-4">
             {submissions.map((s) => (
-              <SubmissionCard key={s.id} submission={s} />
+              <SubmissionCard
+                key={s.id}
+                submission={s}
+                review={
+                  s.status === "pending" && s.id === unit.currentSubmissionId
+                    ? {
+                        reviewing,
+                        rejectNote,
+                        setRejectNote,
+                        onApprove: handleApprove,
+                        onReject: handleReject,
+                      }
+                    : undefined
+                }
+              />
             ))}
           </div>
         )}
@@ -235,9 +203,23 @@ export default function SupervisorUnitDetailPage() {
   );
 }
 
-function SubmissionCard({ submission: s }: { submission: AuditSubmissionDoc }) {
+interface ReviewActions {
+  reviewing: boolean;
+  rejectNote: string;
+  setRejectNote: (v: string) => void;
+  onApprove: () => void;
+  onReject: () => void;
+}
+
+function SubmissionCard({
+  submission: s,
+  review,
+}: {
+  submission: AuditSubmissionDoc;
+  review?: ReviewActions;
+}) {
   return (
-    <Card className="border-border/50">
+    <Card className={review ? "border-primary/40 bg-primary/5" : "border-border/50"}>
       <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
         <CardTitle className="text-sm font-medium">
           Versi {s.version}
@@ -286,6 +268,49 @@ function SubmissionCard({ submission: s }: { submission: AuditSubmissionDoc }) {
                   <ExternalLink className="h-3 w-3" />
                 </a>
               ))}
+            </div>
+          </div>
+        )}
+        {review && (
+          <div className="flex flex-col gap-3 border-t pt-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm font-medium">Tindakan Diperlukan</p>
+            <div className="flex gap-2">
+              <AlertDialog>
+                <AlertDialogTrigger
+                  render={
+                    <Button variant="outline" className="text-destructive" disabled={review.reviewing}>
+                      <X className="mr-1.5 h-4 w-4" />
+                      Tolak
+                    </Button>
+                  }
+                />
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Tolak audit ini?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Berikan alasan penolakan agar Field Audit bisa merevisi.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <Textarea
+                    value={review.rejectNote}
+                    onChange={(e) => review.setRejectNote(e.target.value)}
+                    placeholder="Alasan penolakan..."
+                    rows={3}
+                  />
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Batal</AlertDialogCancel>
+                    <AlertDialogAction onClick={review.onReject}>Tolak Audit</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+              <Button onClick={review.onApprove} disabled={review.reviewing}>
+                {review.reviewing ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <Check className="mr-1.5 h-4 w-4" />
+                )}
+                Setujui
+              </Button>
             </div>
           </div>
         )}

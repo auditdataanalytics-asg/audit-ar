@@ -42,6 +42,10 @@ export function SupervisorSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" render={<Link href="/" />} tooltip="Ganti workspace">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/icon-color.png" alt="" className="size-7 shrink-0 dark:hidden" />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/icon-white.png" alt="" className="hidden size-7 shrink-0 dark:block" />
               <div className="flex flex-col gap-0.5 leading-none">
                 <span className="font-heading font-semibold text-sm">Audit AR</span>
                 <span className="text-xs text-muted-foreground">Supervisor · Ganti workspace</span>

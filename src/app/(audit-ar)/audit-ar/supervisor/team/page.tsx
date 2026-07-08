@@ -1,10 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Search } from "lucide-react";
+import { Loader2, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import {
   Table,
@@ -38,6 +50,7 @@ export default function TeamPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [savingUid, setSavingUid] = useState<string | null>(null);
+  const [deletingUid, setDeletingUid] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -88,6 +101,29 @@ export default function TeamPage() {
     }
   }
 
+  async function deleteUser(target: TeamUser) {
+    if (!user) return;
+    setDeletingUid(target.uid);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch("/api/audit-ar/users", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ uid: target.uid }),
+      });
+      if (!res.ok) throw new Error();
+      setUsers((prev) => prev.filter((u) => u.uid !== target.uid));
+      toast.success(`Akun ${target.displayName || target.email} dihapus`);
+    } catch {
+      toast.error("Gagal menghapus akun");
+    } finally {
+      setDeletingUid(null);
+    }
+  }
+
   const filtered = users.filter((u) => {
     const q = search.trim().toLowerCase();
     return !q || [u.displayName, u.email].some((v) => v.toLowerCase().includes(q));
@@ -126,6 +162,7 @@ export default function TeamPage() {
                 <TableHead>Nama</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead className="w-48">Akses Audit AR</TableHead>
+                <TableHead className="w-12 text-right">Aksi</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -148,6 +185,41 @@ export default function TeamPage() {
                         <SelectItem value={ROLE_VALUE.fieldAudit}>Field Audit</SelectItem>
                       </SelectContent>
                     </Select>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <AlertDialog>
+                      <AlertDialogTrigger
+                        render={
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 text-destructive"
+                            disabled={deletingUid === u.uid || u.uid === user?.uid}
+                          >
+                            {deletingUid === u.uid ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        }
+                      />
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Hapus akun ini?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            Akun {u.displayName || u.email} akan dihapus permanen dari Audit AR
+                            (akun login + data). Tindakan ini tidak bisa dibatalkan.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Batal</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => deleteUser(u)}>
+                            Hapus Akun
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </TableCell>
                 </TableRow>
               ))}

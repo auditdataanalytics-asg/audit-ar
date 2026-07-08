@@ -197,5 +197,4 @@ export const OCCUPANCY_PHOTO_FIELDS: OccupancyPhotoField[] = [
   { key: "occupancy-lights", label: "Lampu (nyala/mati)", required: true },
   { key: "occupancy-vehicle", label: "Kendaraan", required: true },
   { key: "occupancy-trash", label: "Sampah", required: true },
-  { key: "occupancy-other", label: "Tanda lain", required: false },
 ];

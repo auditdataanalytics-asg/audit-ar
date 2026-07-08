@@ -40,6 +40,7 @@ import {
 import { auditSubmissionSchema } from "@/lib/audit-ar/validators";
 import {
   OCCUPANCY_PHOTO_FIELDS,
+  PLT_STATUS_LABELS,
   type AuditUnitDoc,
   type AuditCategoryDoc,
   type AuditAttachment,
@@ -79,6 +80,7 @@ export default function FieldAuditFormPage() {
   const [customPhotoLabel, setCustomPhotoLabel] = useState("");
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const ownsLock = useMemo(() => {
     return (
@@ -190,12 +192,13 @@ export default function FieldAuditFormPage() {
       : (selectedPhotoOption?.label ?? "");
 
   async function handlePhotoFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file || !unit || !user) return;
     const label = selectedPhotoLabel;
     if (!label) {
       toast.error("Pilih atau isi label foto dulu");
-      if (photoInputRef.current) photoInputRef.current.value = "";
+      input.value = "";
       return;
     }
 
@@ -250,7 +253,7 @@ export default function FieldAuditFormPage() {
       );
     } finally {
       setUploadingPhoto(false);
-      if (photoInputRef.current) photoInputRef.current.value = "";
+      input.value = "";
     }
   }
 
@@ -283,7 +286,10 @@ export default function FieldAuditFormPage() {
       {/* Occupancy */}
       <Card className="border-border/50">
         <CardContent className="space-y-3 p-4">
-          <Label>Status Hunian</Label>
+          <Label>
+            Status Hunian
+            <RequiredMark />
+          </Label>
           <RadioGroup
             value={occupancy}
             onValueChange={(v) => setOccupancy(v as OccupancyStatus)}
@@ -299,7 +305,10 @@ export default function FieldAuditFormPage() {
       <Card className="border-border/50">
         <CardContent className="space-y-4 p-4">
           <div>
-            <Label>Foto Indikator Hunian</Label>
+            <Label>
+              Foto Indikator Hunian
+              <RequiredMark />
+            </Label>
             <p className="text-xs text-muted-foreground">
               Minimal 1 foto. Kamu bisa upload beberapa foto dengan label masing-masing.
             </p>
@@ -313,8 +322,15 @@ export default function FieldAuditFormPage() {
             className="hidden"
             onChange={handlePhotoFile}
           />
+          <input
+            ref={galleryInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handlePhotoFile}
+          />
 
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+          <div className="space-y-2">
             <div className="grid gap-2 sm:grid-cols-2">
               <Select value={photoLabelKey} onValueChange={(v) => setPhotoLabelKey(v ?? "")}>
                 <SelectTrigger className="h-11 w-full">
@@ -348,20 +364,32 @@ export default function FieldAuditFormPage() {
                 />
               )}
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-11"
-              disabled={uploadingPhoto || !selectedPhotoLabel}
-              onClick={() => photoInputRef.current?.click()}
-            >
-              {uploadingPhoto ? (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              ) : (
-                <Camera className="mr-1.5 h-4 w-4" />
-              )}
-              Upload Foto
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11"
+                disabled={uploadingPhoto || !selectedPhotoLabel}
+                onClick={() => photoInputRef.current?.click()}
+              >
+                {uploadingPhoto ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <Camera className="mr-1.5 h-4 w-4" />
+                )}
+                Kamera
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11"
+                disabled={uploadingPhoto || !selectedPhotoLabel}
+                onClick={() => galleryInputRef.current?.click()}
+              >
+                <ImageIcon className="mr-1.5 h-4 w-4" />
+                Galeri
+              </Button>
+            </div>
           </div>
 
           {attachments.length === 0 ? (
@@ -411,17 +439,23 @@ export default function FieldAuditFormPage() {
       {/* PLT / building condition / type */}
       <Card className="border-border/50">
         <CardContent className="space-y-4 p-4">
-          <div className="space-y-2">
-            <Label>PLT / Pelataran</Label>
-            <RadioGroup
-              value={pltStatus}
-              onValueChange={(v) => setPltStatus(v as PltStatus)}
-              className="grid gap-2 sm:grid-cols-3"
-            >
-              <PltOption value="exists" label="Ada PLT" current={pltStatus} />
-              <PltOption value="not_exists" label="Tidak ada PLT" current={pltStatus} />
-              <PltOption value="other" label="Lainnya" current={pltStatus} />
-            </RadioGroup>
+          <div className="space-y-1.5">
+            <Label>
+              PLT / Pelataran
+              <RequiredMark />
+            </Label>
+            <Select value={pltStatus} onValueChange={(v) => setPltStatus((v as PltStatus) ?? "")}>
+              <SelectTrigger className="h-11 w-full">
+                <span className={pltStatus ? "" : "text-muted-foreground"}>
+                  {pltStatus ? PLT_STATUS_LABELS[pltStatus] : "Pilih PLT / pelataran"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="exists">Ada PLT</SelectItem>
+                <SelectItem value="not_exists">Tidak ada PLT</SelectItem>
+                <SelectItem value="other">Lainnya</SelectItem>
+              </SelectContent>
+            </Select>
             {pltStatus === "other" && (
               <Input
                 value={pltNotes}
@@ -433,7 +467,10 @@ export default function FieldAuditFormPage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label>Kondisi Bangunan</Label>
+            <Label>
+              Kondisi Bangunan
+              <RequiredMark />
+            </Label>
             <Select value={conditionId} onValueChange={(v) => setConditionId(v ?? "")}>
               <SelectTrigger className="h-11 w-full">
                 <span className={selectedCondition ? "" : "text-muted-foreground"}>
@@ -451,7 +488,10 @@ export default function FieldAuditFormPage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label>Tipe Bangunan</Label>
+            <Label>
+              Tipe Bangunan
+              <RequiredMark />
+            </Label>
             <Select value={typeId} onValueChange={(v) => setTypeId(v ?? "")}>
               <SelectTrigger className="h-11 w-full">
                 <span className={selectedType ? "" : "text-muted-foreground"}>
@@ -524,6 +564,10 @@ export default function FieldAuditFormPage() {
   );
 }
 
+function RequiredMark() {
+  return <span className="ml-1 text-destructive">*</span>;
+}
+
 function OccupancyOption({
   value,
   label,
@@ -537,34 +581,11 @@ function OccupancyOption({
   return (
     <Label
       htmlFor={`occ-${value}`}
-      className={`flex cursor-pointer items-center justify-center rounded-lg border p-3 text-sm font-medium transition-colors ${
+      className={`flex min-h-[3.25rem] cursor-pointer items-center justify-center text-balance rounded-lg border px-2 py-3 text-center text-sm font-medium leading-tight transition-colors ${
         active ? "border-primary bg-primary/10 text-primary" : "border-border"
       }`}
     >
       <RadioGroupItem id={`occ-${value}`} value={value} className="sr-only" />
-      {label}
-    </Label>
-  );
-}
-
-function PltOption({
-  value,
-  label,
-  current,
-}: {
-  value: PltStatus;
-  label: string;
-  current: string;
-}) {
-  const active = current === value;
-  return (
-    <Label
-      htmlFor={`plt-${value}`}
-      className={`flex cursor-pointer items-center justify-center rounded-lg border p-3 text-sm font-medium transition-colors ${
-        active ? "border-primary bg-primary/10 text-primary" : "border-border"
-      }`}
-    >
-      <RadioGroupItem id={`plt-${value}`} value={value} className="sr-only" />
       {label}
     </Label>
   );

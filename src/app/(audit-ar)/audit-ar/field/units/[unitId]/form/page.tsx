@@ -62,9 +62,10 @@ const PHOTO_LABEL_OPTIONS = OCCUPANCY_PHOTO_FIELDS.map((f) => ({
   label: f.label,
 }));
 
-// Google Drive thumbnails carry a size suffix (e.g. "=s220"); bump it for a larger preview.
-function enlargeThumbnail(url: string): string {
-  return url.replace(/=s\d+[-\w]*$/, "=s1200").replace(/=w\d+-h\d+[-\w]*$/, "=s1200");
+// Public Drive files render directly from the CDN by id (works immediately after
+// upload, before Drive has generated its own thumbnailLink).
+function driveImageUrl(fileId: string, size: number): string {
+  return `https://lh3.googleusercontent.com/d/${fileId}=s${size}`;
 }
 
 export default function FieldAuditFormPage() {
@@ -94,6 +95,7 @@ export default function FieldAuditFormPage() {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<AuditAttachment | null>(null);
+  const [localPreviews, setLocalPreviews] = useState<Record<string, string>>({});
   const hydratedRef = useRef(false);
 
   const ownsLock = useMemo(() => {
@@ -315,6 +317,7 @@ export default function FieldAuditFormPage() {
       };
       const next = [...attachments, nextAttachment];
       setAttachments(next);
+      setLocalPreviews((p) => ({ ...p, [fieldKey]: URL.createObjectURL(blob) }));
       void persistDraft(next);
       if (photoLabelKey === PHOTO_LABEL_OTHER) setCustomPhotoLabel("");
     } catch (err: unknown) {
@@ -479,16 +482,12 @@ export default function FieldAuditFormPage() {
                     aria-label="Pratinjau foto"
                     className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted"
                   >
-                    {attachment.thumbnailLink ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={attachment.thumbnailLink}
-                        alt={attachment.label}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <ImageIcon className="h-5 w-5 text-muted-foreground" />
-                    )}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={localPreviews[attachment.key] ?? driveImageUrl(attachment.fileId, 200)}
+                      alt={attachment.label}
+                      className="h-full w-full object-cover"
+                    />
                   </button>
                   <button
                     type="button"
@@ -650,19 +649,14 @@ export default function FieldAuditFormPage() {
           <DialogHeader>
             <DialogTitle className="truncate pr-8">{preview?.label}</DialogTitle>
           </DialogHeader>
-          {preview &&
-            (preview.thumbnailLink ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={enlargeThumbnail(preview.thumbnailLink)}
-                alt={preview.label}
-                className="max-h-[70vh] w-full rounded-md object-contain"
-              />
-            ) : (
-              <div className="flex h-40 items-center justify-center rounded-md border bg-muted">
-                <ImageIcon className="h-8 w-8 text-muted-foreground" />
-              </div>
-            ))}
+          {preview && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={localPreviews[preview.key] ?? driveImageUrl(preview.fileId, 1200)}
+              alt={preview.label}
+              className="max-h-[70vh] w-full rounded-md object-contain"
+            />
+          )}
           {preview?.webViewLink && (
             <a
               href={preview.webViewLink}

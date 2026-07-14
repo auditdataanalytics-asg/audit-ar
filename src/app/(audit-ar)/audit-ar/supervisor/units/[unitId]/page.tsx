@@ -80,8 +80,14 @@ export default function SupervisorUnitDetailPage() {
     if (!unit || !unit.currentSubmissionId || !user) return;
     setReviewing(true);
     try {
-      await reviewSubmission(unit, unit.currentSubmissionId, "approved", user.uid, reviewerName);
-      toast.success("Audit disetujui");
+      const res = await reviewSubmission(unit, unit.currentSubmissionId, "approved", user.uid, reviewerName);
+      if (res.ok) {
+        toast.success("Audit disetujui");
+      } else if (res.reason === "already_reviewed") {
+        toast.info("Audit ini sudah direview supervisor lain");
+      } else {
+        toast.error("Gagal menyetujui");
+      }
       await load();
     } catch {
       toast.error("Gagal menyetujui");
@@ -99,9 +105,15 @@ export default function SupervisorUnitDetailPage() {
     }
     setReviewing(true);
     try {
-      await reviewSubmission(unit, unit.currentSubmissionId, "rejected", user.uid, reviewerName, note);
-      toast.success("Audit ditolak");
-      setRejectNote("");
+      const res = await reviewSubmission(unit, unit.currentSubmissionId, "rejected", user.uid, reviewerName, note);
+      if (res.ok) {
+        toast.success("Audit ditolak");
+        setRejectNote("");
+      } else if (res.reason === "already_reviewed") {
+        toast.info("Audit ini sudah direview supervisor lain");
+      } else {
+        toast.error("Gagal menolak");
+      }
       await load();
     } catch {
       toast.error("Gagal menolak");

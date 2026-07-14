@@ -366,7 +366,16 @@ export async function getSubmission(unitId: string, submissionId: string) {
     : null;
 }
 
-/** Supervisor approves or rejects the current submission. Rejection requires a note. */
+export type ReviewResult =
+  | { ok: true }
+  | { ok: false; reason: "already_reviewed" | "not_found" | "error" };
+
+/**
+ * Supervisor approves or rejects the current submission. Rejection requires a note.
+ * Runs in a transaction that re-reads the submission and only proceeds while it is
+ * still `pending`, so two supervisors (or a stale tab) cannot silently overwrite
+ * each other's decision — the loser gets `already_reviewed`.
+ */
 export async function reviewSubmission(
   unit: AuditUnitDoc,
   submissionId: string,
@@ -374,26 +383,36 @@ export async function reviewSubmission(
   reviewerUid: string,
   reviewerName: string,
   rejectionNote?: string,
-): Promise<void> {
+): Promise<ReviewResult> {
   const subRef = doc(db(), "auditUnits", unit.id, "submissions", submissionId);
   const unitRef = doc(db(), "auditUnits", unit.id);
-  const batch = writeBatch(db());
-
-  batch.update(subRef, {
-    status: decision,
-    reviewedBy: reviewerUid,
-    reviewedByName: reviewerName,
-    reviewedAt: serverTimestamp(),
-    rejectionNote: decision === "rejected" ? rejectionNote ?? "" : null,
-  });
-  batch.update(unitRef, {
-    status: decision,
-    lastReviewedAt: serverTimestamp(),
-    lastReviewedBy: reviewerUid,
-    lastRejectionNote: decision === "rejected" ? rejectionNote ?? "" : null,
-    updatedAt: serverTimestamp(),
-  });
-  await batch.commit();
+  try {
+    return await runTransaction(db(), async (tx) => {
+      const snap = await tx.get(subRef);
+      if (!snap.exists()) return { ok: false, reason: "not_found" } as const;
+      if ((snap.data() as AuditSubmissionDoc).status !== "pending") {
+        return { ok: false, reason: "already_reviewed" } as const;
+      }
+      const note = decision === "rejected" ? rejectionNote ?? "" : null;
+      tx.update(subRef, {
+        status: decision,
+        reviewedBy: reviewerUid,
+        reviewedByName: reviewerName,
+        reviewedAt: serverTimestamp(),
+        rejectionNote: note,
+      });
+      tx.update(unitRef, {
+        status: decision,
+        lastReviewedAt: serverTimestamp(),
+        lastReviewedBy: reviewerUid,
+        lastRejectionNote: note,
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true } as const;
+    });
+  } catch {
+    return { ok: false, reason: "error" };
+  }
 }
 
 // ── Categories ──

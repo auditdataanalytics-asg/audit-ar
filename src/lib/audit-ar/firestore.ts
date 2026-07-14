@@ -31,6 +31,7 @@ import type {
 } from "./types";
 import type { AuditUnitRow } from "./validators";
 import { normalizeUnitNumber, unitIdFromNumber } from "./unit-id";
+import { canTransition } from "./status-machine";
 
 // Test-only seam: emulator-backed Firestore instances are injected here so the
 // data-layer functions can run against @firebase/rules-unit-testing contexts
@@ -304,47 +305,73 @@ export interface NewSubmissionPayload {
   attachments: AuditAttachment[];
 }
 
+export type CreateSubmissionResult =
+  | { ok: true; submissionId: string }
+  | { ok: false; reason: "already_submitted" | "not_locked" | "not_found" | "error" };
+
 /**
- * Create a new immutable submission and flip the unit to pending. The caller must
- * hold the unit's draft lock (enforced by rules + the lock itself), so a plain
- * batch is sufficient — no concurrent submitter for the same unit.
+ * Create a new immutable submission and flip the unit to pending. Runs in a
+ * transaction that re-reads the unit (the contended doc), so a repeated submit for
+ * the same draft (double-tap / retry) finds the unit already `pending` and returns
+ * `already_submitted` instead of creating a duplicate submission. The write itself
+ * is still gated on the caller holding a live lock.
  */
 export async function createSubmission(
   unit: AuditUnitDoc,
   submittedBy: string,
   submittedByName: string,
   payload: NewSubmissionPayload,
-): Promise<string> {
-  const version = (unit.submissionCount ?? 0) + 1;
-  const subRef = doc(collection(db(), "auditUnits", unit.id, "submissions"));
+): Promise<CreateSubmissionResult> {
   const unitRef = doc(db(), "auditUnits", unit.id);
+  // Generated once so a transaction retry reuses the same submission id.
+  const subRef = doc(collection(db(), "auditUnits", unit.id, "submissions"));
+  try {
+    return await runTransaction(db(), async (tx) => {
+      const snap = await tx.get(unitRef);
+      if (!snap.exists()) return { ok: false, reason: "not_found" } as const;
+      const data = snap.data() as AuditUnitDoc;
+      // A duplicate submit sees the unit already `pending` here (draft|rejected ->
+      // pending only). Checked before the lock so a benign double-tap — whose first
+      // call already cleared the lock — reads as already_submitted, not not_locked.
+      if (!canTransition(data.status, "pending", "fieldAudit")) {
+        return { ok: false, reason: "already_submitted" } as const;
+      }
+      const lock = data.lock;
+      const ownsLock =
+        !!lock &&
+        lock.lockedBy === submittedBy &&
+        lock.lockedAt.toMillis() + LOCK_TTL_MS > Date.now();
+      if (!ownsLock) return { ok: false, reason: "not_locked" } as const;
 
-  const batch = writeBatch(db());
-  batch.set(subRef, {
-    unitId: unit.id,
-    unitNumber: unit.unitNumber,
-    version,
-    status: "pending",
-    submittedBy,
-    submittedByName,
-    submittedAt: serverTimestamp(),
-    reviewedBy: null,
-    reviewedByName: null,
-    reviewedAt: null,
-    rejectionNote: null,
-    ...payload,
-  });
-  batch.update(unitRef, {
-    status: "pending",
-    currentSubmissionId: subRef.id,
-    submissionCount: version,
-    lastSubmittedAt: serverTimestamp(),
-    lock: null,
-    draft: null,
-    updatedAt: serverTimestamp(),
-  });
-  await batch.commit();
-  return subRef.id;
+      const version = (data.submissionCount ?? 0) + 1;
+      tx.set(subRef, {
+        unitId: unit.id,
+        unitNumber: data.unitNumber,
+        version,
+        status: "pending",
+        submittedBy,
+        submittedByName,
+        submittedAt: serverTimestamp(),
+        reviewedBy: null,
+        reviewedByName: null,
+        reviewedAt: null,
+        rejectionNote: null,
+        ...payload,
+      });
+      tx.update(unitRef, {
+        status: "pending",
+        currentSubmissionId: subRef.id,
+        submissionCount: version,
+        lastSubmittedAt: serverTimestamp(),
+        lock: null,
+        draft: null,
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true, submissionId: subRef.id } as const;
+    });
+  } catch {
+    return { ok: false, reason: "error" };
+  }
 }
 
 export async function getSubmissions(unitId: string) {

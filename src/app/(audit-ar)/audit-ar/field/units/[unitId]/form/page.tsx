@@ -97,6 +97,9 @@ export default function FieldAuditFormPage() {
   const [preview, setPreview] = useState<AuditAttachment | null>(null);
   const [localPreviews, setLocalPreviews] = useState<Record<string, string>>({});
   const hydratedRef = useRef(false);
+  // Re-entrancy guard: blocks a second submit dispatched before React re-renders
+  // the disabled button (physical double-tap).
+  const submittingRef = useRef(false);
 
   const ownsLock = useMemo(() => {
     return (
@@ -203,6 +206,7 @@ export default function FieldAuditFormPage() {
 
   async function handleSubmit() {
     if (!unit || !user) return;
+    if (submittingRef.current) return; // re-entrancy guard (double-tap)
     const parsed = auditSubmissionSchema.safeParse({
       occupancyStatus: occupancy,
       pltStatus,
@@ -220,11 +224,13 @@ export default function FieldAuditFormPage() {
       return;
     }
 
+    submittingRef.current = true;
     setSubmitting(true);
+    let navigated = false;
     try {
       const condition = conditions.find((c) => c.id === conditionId);
       const type = types.find((c) => c.id === typeId);
-      await createSubmission(
+      const res = await createSubmission(
         unit,
         user.uid,
         user.displayName || user.email || "Auditor",
@@ -241,11 +247,27 @@ export default function FieldAuditFormPage() {
           attachments,
         },
       );
-      toast.success("Audit terkirim untuk review");
-      router.replace(`/audit-ar/field/units/${unit.id}`);
+      if (res.ok) {
+        toast.success("Audit terkirim untuk review");
+        navigated = true;
+        router.replace(`/audit-ar/field/units/${unit.id}`);
+      } else if (res.reason === "already_submitted") {
+        // A duplicate submit (double-tap / retry) — the audit is already in review.
+        toast.info("Audit ini sudah terkirim");
+        navigated = true;
+        router.replace(`/audit-ar/field/units/${unit.id}`);
+      } else {
+        toast.error("Gagal mengirim audit");
+      }
     } catch {
       toast.error("Gagal mengirim audit");
-      setSubmitting(false);
+    } finally {
+      // Keep the button disabled while navigating away on success; otherwise reset
+      // so the auditor can retry a genuine failure.
+      if (!navigated) {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
     }
   }
 

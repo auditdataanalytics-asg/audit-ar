@@ -26,6 +26,7 @@ import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { formatDateTime } from "@/lib/shared/date-format";
 import {
   formatPltStatus,
+  CONCERN_FLAG_LABEL,
   type AuditUnitDoc,
   type AuditSubmissionDoc,
 } from "@/lib/audit-ar/types";
@@ -140,11 +141,13 @@ export default function SupervisorUnitDetailPage() {
 
   const master: [string, string][] = [
     ["Proyek", unit.projectName],
-    ["Detail Unit", unit.unitDetail || "-"],
-    ["Customer", unit.customerName || "-"],
+    ["Cluster", unit.cluster || "-"],
+    ["Detail unit", unit.unitDetail || "-"],
+    ["Pelataran (Data Sistem)", unit.pelataranSistem ? "Yes" : "No"],
     ["Brand", unit.brandName || "-"],
     ["Tipe Unit", unit.unitType || "-"],
   ];
+  const concernFlags = unit.concernFlags ?? [];
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -172,12 +175,22 @@ export default function SupervisorUnitDetailPage() {
               <p className="text-sm">{v}</p>
             </div>
           ))}
-          {unit.concernNotes && (
+          {(concernFlags.length > 0 || unit.concernNotes) && (
             <div className="sm:col-span-2 border-l-2 border-amber-500/60 pl-3">
               <p className="text-xs font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
                 Catatan Audit
               </p>
-              <p className="mt-1 text-sm">{unit.concernNotes}</p>
+              {concernFlags.length > 0 && (
+                <ul className="mt-1.5 space-y-1">
+                  {concernFlags.map((k) => (
+                    <li key={k} className="flex items-center gap-1.5 text-sm">
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                      {CONCERN_FLAG_LABEL[k] ?? k}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {unit.concernNotes && <p className="mt-1.5 text-sm">{unit.concernNotes}</p>}
             </div>
           )}
         </CardContent>

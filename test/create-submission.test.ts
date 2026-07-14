@@ -42,12 +42,7 @@ async function seedDraftLockedBy(uid: string) {
       status: "draft",
       currentSubmissionId: null,
       submissionCount: 0,
-      lock: {
-        lockedBy: uid,
-        lockedByName: uid,
-        lockedAt: Timestamp.now(),
-        lockExpiresAt: Timestamp.fromMillis(Date.now() + 15 * 60 * 1000),
-      },
+      lock: { lockedBy: uid, lockedByName: uid, lockedAt: Timestamp.now() },
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });

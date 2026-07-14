@@ -43,6 +43,24 @@ service cloud.firestore {
     function hasAuditAccess() {
       return isSupervisor() || isFieldAudit();
     }
+    // ── Draft-lock helpers (server-authoritative validity) ──
+    // A lock is valid while lockedAt + 15m is in the future, judged with the
+    // server clock (request.time). Keep 15m in sync with LOCK_TTL_MS.
+    function lockActive(l) {
+      return l != null && request.time < l.lockedAt + duration.value(15, 'm');
+    }
+    // A field auditor may only set the lock to itself, and may not overwrite a
+    // still-active lock held by someone else. Clearing (null) is allowed only for
+    // its own lock or one that has already expired.
+    function lockOk(uid) {
+      let old = resource.data.get('lock', null);
+      let neu = request.resource.data.get('lock', null);
+      return neu == null
+        ? (!lockActive(old) || old.lockedBy == uid)
+        : (neu.get('lockedBy', null) == uid
+           && (!lockActive(old) || old.lockedBy == uid));
+    }
+
     function isDefaultSupervisorModule() {
       return request.resource.data.modules.keys().hasOnly(['auditAr'])
         && request.resource.data.modules.auditAr.keys().hasOnly([
@@ -75,7 +93,12 @@ service cloud.firestore {
 
     match /auditUnits/{unitId} {
       allow read: if hasAuditAccess();
-      allow create, delete: if isSupervisor();
+      // Create by supervisor. Delete is never allowed from a client: all unit
+      // deletion goes through the Admin-SDK route /api/audit-ar/units/delete,
+      // which archives the unit + its submissions to `auditUnitsDeleted` before
+      // removing them. This guarantees no unit is ever destroyed without a backup.
+      allow create: if isSupervisor();
+      allow delete: if false;
       // Supervisor may update anything; Field Audit may only touch the draft/lock
       // lifecycle fields of a unit it owns, and may never set status to approved.
       allow update: if isSupervisor()
@@ -86,8 +109,7 @@ service cloud.firestore {
                            'draft'])
             && request.resource.data.status in
                  ['not_started', 'draft', 'pending', 'rejected']
-            && (request.resource.data.lock == null
-                || request.resource.data.lock.lockedBy == request.auth.uid));
+            && lockOk(request.auth.uid));
 
       match /submissions/{submissionId} {
         allow read: if hasAuditAccess();

@@ -6,7 +6,7 @@ import { Loader2, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 import { Stat, StatGroup } from "@/components/shared/stat";
-import { getAuditUnits } from "@/lib/audit-ar/firestore";
+import { getAuditUnits, LOCK_TTL_MS } from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import type { AuditUnitDoc } from "@/lib/audit-ar/types";
 
@@ -35,7 +35,7 @@ export default function FieldDashboardPage() {
       (u) =>
         u.status === "not_started" ||
         (u.status === "draft" &&
-          (!u.lock || u.lock.lockExpiresAt.toMillis() < loadedAt)),
+          (!u.lock || u.lock.lockedAt.toMillis() + LOCK_TTL_MS < loadedAt)),
     ).length;
     const myDrafts = units.filter(
       (u) => u.status === "draft" && u.lock?.lockedBy === user?.uid,

@@ -1,14 +1,16 @@
 import { z } from "zod";
 
-// One row of the master-data Excel import.
+// One row of the master-data Excel import ("Data Opname" sheet).
 export const auditUnitRowSchema = z.object({
   unitNumber: z.string().trim().min(1, "Nomor unit kosong"),
   projectName: z.string().trim().min(1, "Nama proyek kosong"),
+  cluster: z.string().trim().default(""),
   unitDetail: z.string().trim().default(""),
-  customerName: z.string().trim().default(""),
+  pelataranSistem: z.boolean().default(false),
   brandName: z.string().trim().default(""),
   unitType: z.string().trim().default(""),
   concernNotes: z.string().trim().default(""),
+  concernFlags: z.array(z.string()).default([]),
 });
 
 export type AuditUnitRow = z.infer<typeof auditUnitRowSchema>;

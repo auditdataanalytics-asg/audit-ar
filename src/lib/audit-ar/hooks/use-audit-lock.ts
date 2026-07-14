@@ -17,7 +17,7 @@ export function useAuditLockHeartbeat(
     if (!active || !unitId || !uid) return;
 
     const renew = () => {
-      void renewDraftLock(unitId);
+      void renewDraftLock(unitId, uid);
     };
     renew();
     const interval = setInterval(renew, 60_000);

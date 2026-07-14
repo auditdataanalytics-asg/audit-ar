@@ -43,6 +43,7 @@ import {
   type UnitDiffEntry,
 } from "@/lib/audit-ar/firestore";
 import { normalizeUnitNumber } from "@/lib/audit-ar/unit-id";
+import { CONCERN_FLAGS } from "@/lib/audit-ar/types";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { cn } from "@/lib/utils";
 
@@ -54,31 +55,40 @@ interface PreviewRow {
   isNew?: boolean;
 }
 
-const HEADER_ALIASES: Record<keyof AuditUnitRow, string[]> = {
-  unitNumber: ["nomor unit", "nomor", "unit", "unit number", "no unit", "no. unit"],
-  projectName: ["nama proyek", "proyek", "project", "project name"],
-  unitDetail: ["detail unit", "detail", "unit detail"],
-  customerName: ["customer", "nama customer", "customer name", "pelanggan"],
-  brandName: ["brand", "brand name", "merek"],
-  unitType: ["tipe unit", "tipe", "unit type", "type"],
-  concernNotes: ["catatan audit", "catatan", "concern", "audit concern notes", "notes", "keterangan"],
+// String columns of the "Data Opname" sheet → their accepted header spellings
+// (lower-cased, whitespace-collapsed). Header-driven: matched by exact name.
+type StringCol =
+  | "unitNumber"
+  | "projectName"
+  | "cluster"
+  | "unitDetail"
+  | "pelataranSistem"
+  | "brandName"
+  | "unitType"
+  | "concernNotes";
+
+const COLUMN_ALIASES: Record<StringCol, string[]> = {
+  projectName: ["final project", "nama proyek", "proyek", "project", "project name"],
+  unitNumber: ["unit", "kode unit", "nomor unit", "nomor", "unit number", "no unit", "no. unit"],
+  unitDetail: ["description", "detail unit", "detail", "unit detail"],
+  cluster: ["klaster", "cluster"],
+  pelataranSistem: ["pelataran (data sistem)", "pelataran data sistem", "pelataran"],
+  brandName: ["brand name - unit pelataran", "brand", "brand name", "merek"],
+  unitType: ["jenis bangunan", "tipe unit", "tipe", "unit type", "type"],
+  concernNotes: ["catatan", "catatan audit", "concern", "notes", "keterangan"],
 };
 
-function pick(
-  row: Record<string, unknown>,
-  keys: string[],
-  field: keyof AuditUnitRow,
-  posIndex: number,
-): string {
-  const lowerMap = new Map<string, string>();
-  for (const k of keys) lowerMap.set(k.toLowerCase().trim(), k);
-  for (const alias of HEADER_ALIASES[field]) {
-    const realKey = lowerMap.get(alias);
-    if (realKey !== undefined) return String(row[realKey] ?? "").trim();
+function normHeader(s: unknown): string {
+  return String(s ?? "").toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function findColumn(headerRow: unknown[], aliases: string[]): number {
+  const normed = headerRow.map(normHeader);
+  for (const a of aliases) {
+    const idx = normed.indexOf(a);
+    if (idx !== -1) return idx;
   }
-  // positional fallback
-  const byPos = keys[posIndex];
-  return byPos !== undefined ? String(row[byPos] ?? "").trim() : "";
+  return -1;
 }
 
 function isPermissionError(error: unknown): boolean {
@@ -112,43 +122,90 @@ export default function UnitImportPage() {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: "array" });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        const sheetName =
+          workbook.SheetNames.find((n) => normHeader(n) === "data opname") ??
+          workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        // Read as a raw matrix so the blank leading row of "Data Opname" doesn't
+        // become the header. Keep all rows so indices map to real Excel rows.
+        const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+          header: 1,
           defval: "",
         });
 
+        const headerRowIdx = matrix.findIndex(
+          (row) =>
+            Array.isArray(row) &&
+            findColumn(row, COLUMN_ALIASES.unitNumber) !== -1 &&
+            findColumn(row, COLUMN_ALIASES.projectName) !== -1,
+        );
+        if (headerRowIdx === -1) {
+          setRows([]);
+          toast.error("Header tidak ditemukan. Pastikan ada kolom 'Final Project' dan 'Unit'.");
+          return;
+        }
+        const headerRow = matrix[headerRowIdx] as unknown[];
+        const cols: Record<StringCol, number> = {
+          unitNumber: findColumn(headerRow, COLUMN_ALIASES.unitNumber),
+          projectName: findColumn(headerRow, COLUMN_ALIASES.projectName),
+          cluster: findColumn(headerRow, COLUMN_ALIASES.cluster),
+          unitDetail: findColumn(headerRow, COLUMN_ALIASES.unitDetail),
+          pelataranSistem: findColumn(headerRow, COLUMN_ALIASES.pelataranSistem),
+          brandName: findColumn(headerRow, COLUMN_ALIASES.brandName),
+          unitType: findColumn(headerRow, COLUMN_ALIASES.unitType),
+          concernNotes: findColumn(headerRow, COLUMN_ALIASES.concernNotes),
+        };
+        const flagCols = CONCERN_FLAGS.map((f) => findColumn(headerRow, [f.header]));
+
         const seen = new Map<string, number>(); // normalized unit -> first row
-        const parsed: PreviewRow[] = json.map((row, i) => {
-          const keys = Object.keys(row);
+        const parsed: PreviewRow[] = [];
+        matrix.slice(headerRowIdx + 1).forEach((rawRow, i) => {
+          const row = Array.isArray(rawRow) ? rawRow : [];
+          const rowNum = headerRowIdx + i + 2; // 1-based Excel row number
+          const at = (idx: number) => (idx >= 0 ? String(row[idx] ?? "").trim() : "");
+          const unitNumber = at(cols.unitNumber);
+          const projectName = at(cols.projectName);
+          // Skip fully blank rows.
+          if (!unitNumber && !projectName && !row.some((c) => String(c ?? "").trim())) {
+            return;
+          }
+          const concernFlags = CONCERN_FLAGS.filter((_, fi) => {
+            const v = flagCols[fi] >= 0 ? String(row[flagCols[fi]] ?? "").trim() : "";
+            return v === "1" || Number(v) === 1;
+          }).map((f) => f.key);
           const candidate = {
-            unitNumber: pick(row, keys, "unitNumber", 0),
-            projectName: pick(row, keys, "projectName", 1),
-            unitDetail: pick(row, keys, "unitDetail", 2),
-            customerName: pick(row, keys, "customerName", 3),
-            brandName: pick(row, keys, "brandName", 4),
-            unitType: pick(row, keys, "unitType", 5),
-            concernNotes: pick(row, keys, "concernNotes", 6),
+            unitNumber,
+            projectName,
+            cluster: at(cols.cluster),
+            unitDetail: at(cols.unitDetail),
+            pelataranSistem: at(cols.pelataranSistem).toLowerCase() === "yes",
+            brandName: at(cols.brandName),
+            unitType: at(cols.unitType),
+            concernNotes: at(cols.concernNotes),
+            concernFlags,
           };
           const result = auditUnitRowSchema.safeParse(candidate);
           if (!result.success) {
-            return {
-              rowNum: i + 2,
+            parsed.push({
+              rowNum,
               data: null,
               valid: false,
               error: result.error.issues.map((x) => x.message).join("; "),
-            };
+            });
+            return;
           }
-          const norm = normalizeUnitNumber(result.data.unitNumber);
-          if (seen.has(norm)) {
-            return {
-              rowNum: i + 2,
+          const key = normalizeUnitNumber(result.data.unitNumber);
+          if (seen.has(key)) {
+            parsed.push({
+              rowNum,
               data: result.data,
               valid: false,
-              error: `Duplikat nomor unit (baris ${seen.get(norm)})`,
-            };
+              error: `Duplikat nomor unit (baris ${seen.get(key)})`,
+            });
+            return;
           }
-          seen.set(norm, i + 2);
-          return { rowNum: i + 2, data: result.data, valid: true };
+          seen.set(key, rowNum);
+          parsed.push({ rowNum, data: result.data, valid: true });
         });
 
         // Diff valid rows against existing units.
@@ -213,36 +270,56 @@ export default function UnitImportPage() {
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       [
-        "Nomor Unit",
-        "Nama Proyek",
-        "Detail Unit",
-        "Customer",
-        "Brand",
-        "Tipe Unit",
-        "Catatan Audit",
+        "Final Project",
+        "Unit",
+        "Description",
+        "Klaster",
+        "Pelataran (Data Sistem)",
+        "Brand Name - Unit Pelataran",
+        "Unit dengan AR tidak di FU / sulit dihubungi / tidak ada respon",
+        "Unit dengan AR full unpaid / long outstanding",
+        "Unit konfirmasi yang tidak masuk unit POM",
+        "Identifikasi eksistensi unit pelataran",
+        "Selisih pelataran",
+        "Unit pelataran - gap period rent",
+        "Terdapat Water tanpa Service Charge",
+        "Terdapat Service Charge tanpa Water",
+        "Jenis Bangunan",
+        "Catatan",
       ],
       [
-        "BLOK-A/12",
-        "Green Residence",
-        "Lantai 2, hadap timur",
-        "PT Maju Jaya",
-        "Greenpark",
-        "Ruko",
+        "BGM - PIK",
+        "AG1/001",
+        "AKASIA GOLF 1 NO. 001",
+        "AKASIA GOLF",
+        "No",
+        "N.A.",
+        "0",
+        "0",
+        "1",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "Rumah",
         "Cek apakah unit ini kavling tanah atau bangunan.",
       ],
     ]);
     ws["!cols"] = [
-      { wch: 16 },
-      { wch: 20 },
-      { wch: 24 },
-      { wch: 20 },
-      { wch: 16 },
-      { wch: 14 },
-      { wch: 48 },
+      { wch: 14 }, // Final Project
+      { wch: 12 }, // Unit
+      { wch: 24 }, // Description
+      { wch: 16 }, // Klaster
+      { wch: 12 }, // Pelataran (Data Sistem)
+      { wch: 16 }, // Brand
+      ...Array.from({ length: 8 }, () => ({ wch: 10 })), // 8 flag columns
+      { wch: 16 }, // Jenis Bangunan
+      { wch: 48 }, // Catatan
     ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Master Data");
-    XLSX.writeFile(wb, "template-master-data-audit-ar.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, "Data Opname");
+    XLSX.writeFile(wb, "template-data-opname-audit-ar.xlsx");
   }
 
   function reset() {
@@ -352,6 +429,8 @@ export default function UnitImportPage() {
                   <TableHead className="w-10" />
                   <TableHead>Nomor Unit</TableHead>
                   <TableHead>Proyek</TableHead>
+                  <TableHead>Cluster</TableHead>
+                  <TableHead className="w-14">Flag</TableHead>
                   <TableHead className="w-24">Aksi</TableHead>
                   <TableHead>Catatan</TableHead>
                 </TableRow>
@@ -369,6 +448,10 @@ export default function UnitImportPage() {
                     </TableCell>
                     <TableCell className="font-medium">{r.data?.unitNumber || "-"}</TableCell>
                     <TableCell className="text-muted-foreground">{r.data?.projectName || "-"}</TableCell>
+                    <TableCell className="text-muted-foreground">{r.data?.cluster || "-"}</TableCell>
+                    <TableCell className="tabular-nums text-muted-foreground">
+                      {r.data ? r.data.concernFlags.length || "-" : "-"}
+                    </TableCell>
                     <TableCell>
                       {r.valid ? (
                         r.isNew ? (

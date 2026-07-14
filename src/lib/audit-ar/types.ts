@@ -61,22 +61,48 @@ export function formatPltStatus(
 export interface AuditLock {
   lockedBy: string; // field-audit uid
   lockedByName: string; // denormalized display name
+  // Server-authoritative acquire/refresh time. A lock is valid while
+  // `lockedAt + LOCK_TTL_MS` is in the future — judged with the server clock in
+  // rules/cron, so a device's clock is never trusted for correctness. The
+  // heartbeat pushes this forward; no separate client-minted expiry field.
   lockedAt: Timestamp;
-  lockExpiresAt: Timestamp; // heartbeat TTL window
 }
+
+// ── Audit concern flags (the "Data Opname" matrix columns) ──
+// Each unit carries a subset of these keys (the columns that were "1" in the
+// import). Rendered as a short-label checklist under "Catatan Audit". `header`
+// is the (lower-cased) Excel column used to match during import — the single
+// source of truth for both parsing and display.
+
+export const CONCERN_FLAGS = [
+  { key: "followUpAr", label: "Follow up AR", header: "unit dengan ar tidak di fu / sulit dihubungi / tidak ada respon" },
+  { key: "arOver90", label: "AR > 90 hari", header: "unit dengan ar full unpaid / long outstanding" },
+  { key: "identUnitPom", label: "Identifikasi Unit POM", header: "unit konfirmasi yang tidak masuk unit pom" },
+  { key: "identPlt", label: "Identifikasi PLT", header: "identifikasi eksistensi unit pelataran" },
+  { key: "konfirmasiPlt", label: "Konfirmasi PLT", header: "selisih pelataran" },
+  { key: "konfirmasiPltPeriod", label: "Konfirmasi PLT (Period)", header: "unit pelataran - gap period rent" },
+  { key: "waterOnly", label: "Water only", header: "terdapat water tanpa service charge" },
+  { key: "svcOnly", label: "SVC only", header: "terdapat service charge tanpa water" },
+] as const;
+
+export const CONCERN_FLAG_LABEL: Record<string, string> = Object.fromEntries(
+  CONCERN_FLAGS.map((f) => [f.key, f.label]),
+);
 
 // ── Master-data unit ──
 
 export interface AuditUnitDoc {
   id: string; // slugged+hashed unitId (doc ID)
-  unitNumber: string; // raw business identity (display)
+  unitNumber: string; // raw business identity (display) — "Kode Unit"
   unitNumberNorm: string; // normalized for exact-match queries (trim+upper)
   projectName: string;
+  cluster: string; // Klaster
   unitDetail: string;
-  customerName: string;
+  pelataranSistem: boolean; // Pelataran (Data Sistem): Yes=true / No=false
   brandName: string;
   unitType: string;
-  concernNotes: string; // instructions/reminders for Field Audit
+  concernNotes: string; // free-text instructions/reminders for Field Audit
+  concernFlags: string[]; // active CONCERN_FLAGS keys from the import matrix
 
   // Denormalized current audit state (source of truth for lists/dashboard)
   status: UnitAuditStatus;
@@ -104,11 +130,13 @@ export type AuditUnitMasterFields = Pick<
   | "unitNumber"
   | "unitNumberNorm"
   | "projectName"
+  | "cluster"
   | "unitDetail"
-  | "customerName"
+  | "pelataranSistem"
   | "brandName"
   | "unitType"
   | "concernNotes"
+  | "concernFlags"
 >;
 
 // ── Attachments (Google Drive) ──

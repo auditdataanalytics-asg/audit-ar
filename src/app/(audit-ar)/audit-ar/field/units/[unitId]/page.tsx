@@ -33,11 +33,13 @@ import {
   getSubmission,
   acquireDraftLock,
   deleteDraft,
+  LOCK_TTL_MS,
 } from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { formatDateTime } from "@/lib/shared/date-format";
 import {
   formatPltStatus,
+  CONCERN_FLAG_LABEL,
   type AuditUnitDoc,
   type AuditSubmissionDoc,
 } from "@/lib/audit-ar/types";
@@ -141,18 +143,21 @@ export default function FieldUnitDetailPage() {
     );
   }
 
-  const lockLive = !!unit.lock && unit.lock.lockExpiresAt.toMillis() > loadedAt;
+  const lockLive = !!unit.lock && unit.lock.lockedAt.toMillis() + LOCK_TTL_MS > loadedAt;
   const lockedByOther = lockLive && unit.lock?.lockedBy !== user?.uid;
   const lockedByMe = lockLive && unit.lock?.lockedBy === user?.uid;
   const hasMyDraft = !!unit.draft && unit.draft.updatedBy === user?.uid;
 
   const master: [string, string][] = [
     ["Proyek", unit.projectName],
-    ["Detail Unit", unit.unitDetail || "-"],
-    ["Customer", unit.customerName || "-"],
+    ["Cluster", unit.cluster || "-"],
+    ["Detail unit", unit.unitDetail || "-"],
+    ["Pelataran (Data Sistem)", unit.pelataranSistem ? "Yes" : "No"],
     ["Brand", unit.brandName || "-"],
     ["Tipe Unit", unit.unitType || "-"],
   ];
+
+  const concernFlags = unit.concernFlags ?? [];
 
   return (
     <div className="space-y-5 pb-4">
@@ -168,15 +173,6 @@ export default function FieldUnitDetailPage() {
           <p className="truncate text-sm text-muted-foreground">{unit.projectName}</p>
         </div>
       </div>
-
-      {unit.concernNotes && (
-        <div className="border-l-2 border-amber-500/60 pl-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
-            Catatan Audit
-          </p>
-          <p className="mt-1 text-sm">{unit.concernNotes}</p>
-        </div>
-      )}
 
       {unit.status === "rejected" && submission?.rejectionNote && (
         <div className="border-l-2 border-destructive pl-3">
@@ -200,6 +196,25 @@ export default function FieldUnitDetailPage() {
           ))}
         </CardContent>
       </Card>
+
+      {(concernFlags.length > 0 || unit.concernNotes) && (
+        <div className="border-l-2 border-amber-500/60 pl-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
+            Catatan Audit
+          </p>
+          {concernFlags.length > 0 && (
+            <ul className="mt-1.5 space-y-1">
+              {concernFlags.map((k) => (
+                <li key={k} className="flex items-center gap-1.5 text-sm">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                  {CONCERN_FLAG_LABEL[k] ?? k}
+                </li>
+              ))}
+            </ul>
+          )}
+          {unit.concernNotes && <p className="mt-1.5 text-sm">{unit.concernNotes}</p>}
+        </div>
+      )}
 
       {/* Submitted result (read-only) for pending/approved */}
       {(unit.status === "pending" || unit.status === "approved") && submission && (

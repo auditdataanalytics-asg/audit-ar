@@ -13,12 +13,11 @@ import {
   writeBatch,
   runTransaction,
   serverTimestamp,
-  Timestamp,
   type QueryConstraint,
   type DocumentData,
   type Firestore,
 } from "firebase/firestore";
-import { getClientDb } from "@/lib/firebase/config";
+import { getClientAuth, getClientDb } from "@/lib/firebase/config";
 import { LOCK_TTL_MS } from "./constants";
 import type {
   AuditUnitDoc,
@@ -115,11 +114,13 @@ export async function batchUpsertAuditUnits(
         unitNumber: e.row.unitNumber.trim(),
         unitNumberNorm: e.unitNumberNorm,
         projectName: e.row.projectName,
+        cluster: e.row.cluster,
         unitDetail: e.row.unitDetail,
-        customerName: e.row.customerName,
+        pelataranSistem: e.row.pelataranSistem,
         brandName: e.row.brandName,
         unitType: e.row.unitType,
         concernNotes: e.row.concernNotes,
+        concernFlags: e.row.concernFlags,
         importBatchId,
         updatedAt: serverTimestamp(),
       };
@@ -186,8 +187,10 @@ export async function acquireDraftLock(
       const data = snap.data() as AuditUnitDoc;
       const now = Date.now();
       const lock = data.lock;
+      // Validity is judged from lockedAt + TTL (the same anchor the rules use with
+      // server time). This client check is a courtesy; the rules are authoritative.
       const heldByOther =
-        !!lock && lock.lockedBy !== uid && lock.lockExpiresAt.toMillis() > now;
+        !!lock && lock.lockedBy !== uid && lock.lockedAt.toMillis() + LOCK_TTL_MS > now;
       if (heldByOther) {
         return { ok: false, reason: "locked", lockedByName: lock.lockedByName } as const;
       }
@@ -200,7 +203,6 @@ export async function acquireDraftLock(
           lockedBy: uid,
           lockedByName: userName,
           lockedAt: serverTimestamp(),
-          lockExpiresAt: Timestamp.fromMillis(now + LOCK_TTL_MS),
         },
         updatedAt: serverTimestamp(),
       });
@@ -212,18 +214,21 @@ export async function acquireDraftLock(
 }
 
 /**
- * Heartbeat — extend the lock TTL. A blind, non-transactional field update
- * (only `lock.lockExpiresAt`) so it never contends with the frequent draft
- * auto-save on the same document. Security rules ensure only the lock owner may
- * write here, so no client-side ownership read is needed.
+ * Heartbeat — push the lock's server-anchored `lockedAt` forward. Transactional
+ * and ownership-checked so it can never resurrect a cleared lock into an ownerless
+ * `{ lockedAt }` fragment (a supervisor bypasses the field-audit lock rule, so a
+ * blind write here would otherwise create a phantom lock nobody can release).
  */
-export async function renewDraftLock(unitId: string): Promise<boolean> {
+export async function renewDraftLock(unitId: string, uid: string): Promise<boolean> {
   const ref = doc(db(), "auditUnits", unitId);
   try {
-    await updateDoc(ref, {
-      "lock.lockExpiresAt": Timestamp.fromMillis(Date.now() + LOCK_TTL_MS),
+    return await runTransaction(db(), async (tx) => {
+      const snap = await tx.get(ref);
+      const lock = snap.exists() ? (snap.data() as AuditUnitDoc).lock : null;
+      if (!lock || lock.lockedBy !== uid) return false; // never renew a null/foreign lock
+      tx.update(ref, { "lock.lockedAt": serverTimestamp() });
+      return true;
     });
-    return true;
   } catch {
     return false;
   }
@@ -472,6 +477,44 @@ export async function updateCategory(
     ...data,
     updatedAt: serverTimestamp(),
   } as DocumentData);
+}
+
+// ── Unit deletion (supervisor-only, via Admin-SDK API route) ──
+// Client cannot delete units directly (rules forbid it): all deletes go through
+// /api/audit-ar/units/delete, which backs the unit + its submissions up to the
+// `auditUnitsDeleted` archive before removing the originals. Restore is a
+// developer-only script.
+
+export interface DeleteUnitsResult {
+  deleted: number;
+  backedUp: number;
+}
+
+async function callDeleteApi(body: Record<string, unknown>): Promise<DeleteUnitsResult> {
+  const currentUser = getClientAuth().currentUser;
+  if (!currentUser) throw new Error("Tidak ada sesi login");
+  const token = await currentUser.getIdToken();
+  const res = await fetch("/api/audit-ar/units/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as
+    | (DeleteUnitsResult & { error?: string })
+    | { error?: string };
+  if (!res.ok) throw new Error((data as { error?: string })?.error || "Gagal menghapus unit");
+  return { deleted: (data as DeleteUnitsResult).deleted ?? 0, backedUp: (data as DeleteUnitsResult).backedUp ?? 0 };
+}
+
+export function deleteUnit(unitId: string): Promise<DeleteUnitsResult> {
+  return callDeleteApi({ unitId });
+}
+
+export function deleteAllUnits(): Promise<DeleteUnitsResult> {
+  return callDeleteApi({ all: true });
 }
 
 // ── Cross-unit submission queries (review queue / dashboard) ──

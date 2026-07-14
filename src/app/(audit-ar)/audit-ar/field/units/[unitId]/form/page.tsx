@@ -43,6 +43,7 @@ import {
   createSubmission,
   saveDraft,
   deleteDraft,
+  LOCK_TTL_MS,
 } from "@/lib/audit-ar/firestore";
 import { auditSubmissionSchema } from "@/lib/audit-ar/validators";
 import {
@@ -105,7 +106,7 @@ export default function FieldAuditFormPage() {
     return (
       !!unit?.lock &&
       unit.lock.lockedBy === user?.uid &&
-      unit.lock.lockExpiresAt.toMillis() > loadedAt
+      unit.lock.lockedAt.toMillis() + LOCK_TTL_MS > loadedAt
     );
   }, [loadedAt, unit, user?.uid]);
 
@@ -143,7 +144,9 @@ export default function FieldAuditFormPage() {
     if (loading || !unit || !user) return;
     const now = Date.now();
     const mine =
-      !!unit.lock && unit.lock.lockedBy === user.uid && unit.lock.lockExpiresAt.toMillis() > now;
+      !!unit.lock &&
+      unit.lock.lockedBy === user.uid &&
+      unit.lock.lockedAt.toMillis() + LOCK_TTL_MS > now;
     if (!mine) {
       toast.error("Kunci draft tidak aktif. Mulai ulang dari halaman unit.");
       router.replace(`/audit-ar/field/units/${unit.id}`);

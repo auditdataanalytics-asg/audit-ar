@@ -32,7 +32,7 @@ export default function FieldUnitsPage() {
       .filter((u) =>
         !q
           ? true
-          : [u.unitNumber, u.projectName, u.customerName]
+          : [u.unitNumber, u.projectName, u.cluster]
               .filter(Boolean)
               .some((v) => v.toLowerCase().includes(q)),
       )

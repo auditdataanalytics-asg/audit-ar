@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { ensureUnitFolder, uploadFile } from "@/lib/audit-ar/google/drive";
 import { slugifyUnitNumber } from "@/lib/audit-ar/unit-id";
+import { LOCK_TTL_MS } from "@/lib/audit-ar/constants";
 
 function timestamp(): string {
   const d = new Date();
@@ -39,9 +40,10 @@ export async function POST(request: NextRequest) {
     }
     const unit = unitSnap.data()!;
 
-    // Caller must currently own the draft lock on this unit.
+    // Caller must currently own a live draft lock on this unit. Validity is
+    // server-anchored: lockedAt + TTL, judged with the server clock.
     const lock = unit.lock;
-    const lockLive = lock && lock.lockExpiresAt?.toMillis?.() > Date.now();
+    const lockLive = lock && lock.lockedAt?.toMillis?.() + LOCK_TTL_MS > Date.now();
     if (!lockLive || lock.lockedBy !== decoded.uid) {
       return NextResponse.json({ error: "Unit not locked by you" }, { status: 403 });
     }

@@ -16,8 +16,10 @@ import {
   Timestamp,
   type QueryConstraint,
   type DocumentData,
+  type Firestore,
 } from "firebase/firestore";
 import { getClientDb } from "@/lib/firebase/config";
+import { LOCK_TTL_MS } from "./constants";
 import type {
   AuditUnitDoc,
   AuditSubmissionDoc,
@@ -30,12 +32,19 @@ import type {
 import type { AuditUnitRow } from "./validators";
 import { normalizeUnitNumber, unitIdFromNumber } from "./unit-id";
 
+// Test-only seam: emulator-backed Firestore instances are injected here so the
+// data-layer functions can run against @firebase/rules-unit-testing contexts
+// without changing production behavior. `null` in prod → real client DB.
+let _dbOverride: Firestore | null = null;
+export function __setDbForTests(instance: Firestore | null) {
+  _dbOverride = instance;
+}
 function db() {
-  return getClientDb();
+  return _dbOverride ?? getClientDb();
 }
 
 const BATCH_LIMIT = 500;
-export const LOCK_TTL_MS = 15 * 60 * 1000; // 15 minutes
+export { LOCK_TTL_MS };
 
 // ── Units (master data) ──
 

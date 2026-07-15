@@ -16,6 +16,21 @@ export function isLockExpired(
   return lockedAtMs == null || lockedAtMs + LOCK_TTL_MS < nowMs;
 }
 
+/**
+ * True when `uid` still holds a live lock: they are the recorded owner and
+ * `lockedAt + LOCK_TTL_MS` is still in the future. Used to gate draft writes and
+ * submissions so a stale client (lock lost / expired / submitted) can no longer
+ * mutate a unit it no longer owns.
+ */
+export function isLockOwnedLive(
+  lockedBy: string | null | undefined,
+  lockedAtMs: number | null | undefined,
+  uid: string,
+  nowMs: number,
+): boolean {
+  return lockedBy === uid && lockedAtMs != null && lockedAtMs + LOCK_TTL_MS > nowMs;
+}
+
 /** The field update the cron should apply, or `null` to leave the unit alone. */
 export type SweepUpdate =
   | { status: "not_started"; lock: null } // draft → reset to not_started

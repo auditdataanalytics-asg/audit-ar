@@ -92,7 +92,10 @@ export default function FieldAuditFormPage() {
   const [attachments, setAttachments] = useState<AuditAttachment[]>([]);
   const [photoLabelKey, setPhotoLabelKey] = useState(PHOTO_LABEL_OPTIONS[0]?.value ?? "");
   const [customPhotoLabel, setCustomPhotoLabel] = useState("");
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  // A counter (not a boolean) so concurrent uploads are all tracked; submit is
+  // blocked while any upload is in flight (Threat 3).
+  const [pendingUploads, setPendingUploads] = useState(0);
+  const uploadingPhoto = pendingUploads > 0;
   const photoInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<AuditAttachment | null>(null);
@@ -210,6 +213,13 @@ export default function FieldAuditFormPage() {
   async function handleSubmit() {
     if (!unit || !user) return;
     if (submittingRef.current) return; // re-entrancy guard (double-tap)
+    if (uploadingPhoto) {
+      // A photo is still uploading; submitting now would snapshot `attachments`
+      // before it lands (Threat 3). The button is also disabled, but this guards
+      // the click that races the re-render.
+      toast.error("Tunggu foto selesai diunggah");
+      return;
+    }
     const parsed = auditSubmissionSchema.safeParse({
       occupancyStatus: occupancy,
       pltStatus,
@@ -306,7 +316,7 @@ export default function FieldAuditFormPage() {
       photoLabelKey === PHOTO_LABEL_OTHER ? "photo-other" : photoLabelKey || "photo";
     const fieldKey = `${fieldPrefix}-${Date.now()}`;
 
-    setUploadingPhoto(true);
+    setPendingUploads((n) => n + 1);
     try {
       const blob = await compressImage(file);
       const token = await user.getIdToken();
@@ -353,7 +363,7 @@ export default function FieldAuditFormPage() {
           : "Gagal mengunggah foto",
       );
     } finally {
-      setUploadingPhoto(false);
+      setPendingUploads((n) => n - 1);
       input.value = "";
     }
   }
@@ -638,7 +648,11 @@ export default function FieldAuditFormPage() {
           <AlertDialog>
             <AlertDialogTrigger
               render={
-                <Button variant="outline" className="h-11 text-destructive" disabled={submitting}>
+                <Button
+                  variant="outline"
+                  className="h-11 text-destructive"
+                  disabled={submitting || uploadingPhoto}
+                >
                   <Trash2 className="h-4 w-4" />
                 </Button>
               }
@@ -657,13 +671,17 @@ export default function FieldAuditFormPage() {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
-          <Button className="h-11 flex-1" onClick={handleSubmit} disabled={submitting}>
+          <Button
+            className="h-11 flex-1"
+            onClick={handleSubmit}
+            disabled={submitting || uploadingPhoto}
+          >
             {submitting ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : (
               <Send className="mr-1.5 h-4 w-4" />
             )}
-            Kirim untuk Review
+            {uploadingPhoto ? "Menunggu foto..." : "Kirim untuk Review"}
           </Button>
         </div>
       </div>

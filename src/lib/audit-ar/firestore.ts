@@ -19,6 +19,7 @@ import {
 } from "firebase/firestore";
 import { getClientAuth, getClientDb } from "@/lib/firebase/config";
 import { LOCK_TTL_MS } from "./constants";
+import { isLockOwnedLive } from "./lock-expiry";
 import type {
   AuditUnitDoc,
   AuditSubmissionDoc,
@@ -266,16 +267,47 @@ export interface DraftPayload {
   attachments: AuditAttachment[];
 }
 
-/** Persist the in-progress draft (fields + uploaded photo refs) on the unit doc. */
+export type SaveDraftResult =
+  | { ok: true }
+  | { ok: false; reason: "not_locked" | "not_found" | "error" };
+
+/**
+ * Persist the in-progress draft (fields + uploaded photo refs) on the unit doc.
+ *
+ * Runs in a transaction gated on the caller still holding a live lock. This is the
+ * root-cause guard for Threat 3: a photo upload that resolves *after* the unit was
+ * submitted (lock + draft cleared, status now `pending`) must not resurrect a draft
+ * on the submitted unit. Without the guard, a bare `updateDoc` would happily write
+ * `draft` back — the field-audit security rule permits it because `pending` is an
+ * allowed status and `lockOk` passes on a now-null lock.
+ */
 export async function saveDraft(
   unitId: string,
   uid: string,
   draft: DraftPayload,
-): Promise<void> {
-  await updateDoc(doc(db(), "auditUnits", unitId), {
-    draft: { ...draft, updatedBy: uid, updatedAt: serverTimestamp() },
-    updatedAt: serverTimestamp(),
-  });
+): Promise<SaveDraftResult> {
+  const ref = doc(db(), "auditUnits", unitId);
+  try {
+    return await runTransaction(db(), async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) return { ok: false, reason: "not_found" } as const;
+      const lock = (snap.data() as AuditUnitDoc).lock;
+      const owns = isLockOwnedLive(
+        lock?.lockedBy,
+        lock?.lockedAt?.toMillis(),
+        uid,
+        Date.now(),
+      );
+      if (!owns) return { ok: false, reason: "not_locked" } as const;
+      tx.update(ref, {
+        draft: { ...draft, updatedBy: uid, updatedAt: serverTimestamp() },
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true } as const;
+    });
+  } catch {
+    return { ok: false, reason: "error" };
+  }
 }
 
 /** Discard the draft: clear draft data + lock, and free a fresh draft back to not_started. */

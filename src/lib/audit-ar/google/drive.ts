@@ -81,6 +81,17 @@ export async function moveFolderToBackup(
   return dateFolder;
 }
 
+/**
+ * Best-effort permanent delete of a Drive file by id. Used when a photo is
+ * removed from a draft or a draft is discarded, so the Drive file doesn't orphan
+ * (Threat 7). Errors are swallowed (the file simply stays) — mirrors the
+ * permission-create swallow in uploadFile; callers don't depend on success.
+ */
+export async function deleteFile(fileId: string): Promise<void> {
+  const drive = await getDrive();
+  await drive.files.delete({ fileId }).catch(() => {});
+}
+
 export interface UploadedFile {
   fileId: string;
   webViewLink: string;

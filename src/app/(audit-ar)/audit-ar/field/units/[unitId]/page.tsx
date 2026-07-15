@@ -33,6 +33,7 @@ import {
   getSubmission,
   acquireDraftLock,
   deleteDraft,
+  deleteAttachmentFiles,
   LOCK_TTL_MS,
 } from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
@@ -120,6 +121,9 @@ export default function FieldUnitDetailPage() {
   async function handleDeleteDraft() {
     if (!unit || !user) return;
     try {
+      // Remove the draft's Drive photos first, while the draft still authorizes
+      // it — deleteDraft below clears it (Threat 7).
+      await deleteAttachmentFiles(unit.id, unit.draft?.attachments ?? []);
       await deleteDraft(unit.id, user.uid);
       toast.success("Draft dihapus");
       load();

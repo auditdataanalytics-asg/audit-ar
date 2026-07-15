@@ -530,6 +530,41 @@ export async function updateCategory(
   } as DocumentData);
 }
 
+// ── Attachment (Drive photo) deletion — best-effort orphan cleanup (Threat 7) ──
+// Goes through /api/audit-ar/attachments/delete (Admin SDK); the route authorizes
+// the lock/draft owner or a supervisor and refuses to delete a file a submission
+// still references. Best-effort: failures are swallowed so draft edits never block.
+
+async function deleteAttachmentFile(unitId: string, fileId: string): Promise<void> {
+  const currentUser = getClientAuth().currentUser;
+  if (!currentUser || !fileId) return;
+  try {
+    const token = await currentUser.getIdToken();
+    await fetch("/api/audit-ar/attachments/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ unitId, fileId }),
+    });
+  } catch {
+    // best-effort; a future Drive folder-diff sweep can reconcile orphans (D7)
+  }
+}
+
+/** Best-effort delete of the Drive files backing a list of attachments. */
+export async function deleteAttachmentFiles(
+  unitId: string,
+  attachments: { fileId?: string }[],
+): Promise<void> {
+  await Promise.all(
+    attachments.map((a) =>
+      a.fileId ? deleteAttachmentFile(unitId, a.fileId) : Promise.resolve(),
+    ),
+  );
+}
+
 // ── Unit deletion (supervisor-only, via Admin-SDK API route) ──
 // Client cannot delete units directly (rules forbid it): all deletes go through
 // /api/audit-ar/units/delete, which backs the unit + its submissions up to the

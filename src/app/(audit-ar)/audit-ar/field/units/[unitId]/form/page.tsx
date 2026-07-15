@@ -42,6 +42,7 @@ import {
   createSubmission,
   saveDraft,
   deleteDraft,
+  deleteAttachmentFiles,
   subscribeAuditUnit,
 } from "@/lib/audit-ar/firestore";
 import { isLockOwnedLive } from "@/lib/audit-ar/lock-expiry";
@@ -336,6 +337,9 @@ export default function FieldAuditFormPage() {
     if (!unit || !user) return;
     leavingRef.current = true; // our own lock clear — don't trip the redirect
     try {
+      // Remove the draft's Drive photos first, while we still own the lock/draft
+      // that authorizes it — deleteDraft below clears both (Threat 7).
+      await deleteAttachmentFiles(unit.id, attachments);
       await deleteDraft(unit.id, user.uid);
       toast.success("Draft dihapus");
       router.replace(`/audit-ar/field/units/${unit.id}`);
@@ -343,6 +347,24 @@ export default function FieldAuditFormPage() {
       leavingRef.current = false; // stay on the form; keep watching the lock
       toast.error("Gagal menghapus draft");
     }
+  }
+
+  async function removeAttachment(attachment: AuditAttachment) {
+    const next = attachments.filter((item) => item.key !== attachment.key);
+    setAttachments(next);
+    void persistDraft(next);
+    // Revoke the local preview and drop it from the map.
+    const url = localPreviews[attachment.key];
+    if (url) {
+      URL.revokeObjectURL(url);
+      setLocalPreviews((p) => {
+        const rest = { ...p };
+        delete rest[attachment.key];
+        return rest;
+      });
+    }
+    // Best-effort remove the Drive file so it doesn't orphan (Threat 7).
+    if (unit) void deleteAttachmentFiles(unit.id, [attachment]);
   }
 
   const selectedPhotoOption = PHOTO_LABEL_OPTIONS.find((o) => o.value === photoLabelKey);
@@ -598,11 +620,7 @@ export default function FieldAuditFormPage() {
                     variant="ghost"
                     size="icon"
                     className="h-9 w-9"
-                    onClick={() => {
-                      const next = attachments.filter((item) => item.key !== attachment.key);
-                      setAttachments(next);
-                      void persistDraft(next);
-                    }}
+                    onClick={() => void removeAttachment(attachment)}
                   >
                     <X className="h-4 w-4" />
                   </Button>

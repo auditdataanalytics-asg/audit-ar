@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   FieldValue,
-  type BulkWriter,
   type DocumentData,
   type DocumentReference,
   type Firestore,
@@ -108,59 +107,40 @@ async function deleteOneUnit(
 }
 
 interface DeleteTarget {
+  unitId: string;
   unitRef: DocumentReference;
   subRefs: DocumentReference[];
 }
 
 const swallow = (p: Promise<unknown>) => {
-  // Phase-2 bulk deletes are best-effort: a failed delete leaves the (already
-  // backed-up) unit in place — never data loss. Swallow to avoid unhandled rejections.
+  // Best-effort writes: a failure is tracked per-unit (backup) or left in place
+  // (delete). Swallow so an abandoned op doesn't surface as an unhandled rejection.
   void p.catch(() => {});
 };
 
 /**
- * Phase 1 (bulk) — archive one unit + its submissions on the shared BulkWriter
- * and AWAIT that the backup writes landed. Throws on backup failure so the
- * caller can skip deleting that unit.
+ * Bulk delete every unit: back up + confirm all first, then delete only the
+ * confirmed ones. Backups are ENQUEUED on the BulkWriter (not awaited per unit)
+ * so it streams at its full throttled rate — awaiting each write added a
+ * round-trip barrier every page-chunk and was the slow part. `backupWriter.close()`
+ * still waits for every backup to land before any delete happens, and a per-write
+ * `.catch` marks any unit whose backup failed so it is NOT deleted.
  */
-async function backupUnit(
-  db: Firestore,
-  writer: BulkWriter,
-  unitId: string,
-  unitData: DocumentData,
-  meta: DeleteMeta,
-): Promise<DeleteTarget> {
-  const unitRef = db.collection("auditUnits").doc(unitId);
-  const backupRef = db.collection("auditUnitsDeleted").doc(`${meta.stamp}__${unitId}`);
-
-  const subDocs =
-    (unitData.submissionCount ?? 0) > 0
-      ? (await unitRef.collection("submissions").get()).docs
-      : [];
-
-  const writes: Promise<unknown>[] = [
-    writer.set(backupRef, backupDoc(unitId, unitData, subDocs.length, meta)),
-    ...subDocs.map((sub) =>
-      writer.set(backupRef.collection("submissions").doc(sub.id), sub.data()),
-    ),
-  ];
-  await Promise.all(writes); // rejects if any backup write ultimately fails
-
-  return { unitRef, subRefs: subDocs.map((s) => s.ref) };
-}
-
-function scheduleDelete(writer: BulkWriter, target: DeleteTarget) {
-  for (const subRef of target.subRefs) swallow(writer.delete(subRef));
-  swallow(writer.delete(target.unitRef));
-}
-
-/** Bulk delete every unit: back up + confirm all first, then delete only the confirmed ones. */
 async function deleteAllUnits(db: Firestore, meta: DeleteMeta): Promise<number> {
+  const t0 = Date.now();
+  const elapsed = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
+
+  const total = (await db.collection("auditUnits").count().get()).data().count;
+  console.log(`[delete-all] start: ${total} units`);
+  if (total === 0) return 0;
+
   const backupWriter = db.bulkWriter();
   const targets: DeleteTarget[] = [];
+  const failed = new Set<string>();
   let last: QueryDocumentSnapshot | null = null;
+  let scanned = 0;
 
-  // Phase 1 — page every unit and back it up (all still exist while paging).
+  // Phase 1 — page every unit, read submissions only if audited, enqueue backups.
   for (;;) {
     let q: Query = db.collection("auditUnits").orderBy("__name__").limit(PAGE_SIZE);
     if (last) q = q.startAfter(last);
@@ -169,23 +149,49 @@ async function deleteAllUnits(db: Firestore, meta: DeleteMeta): Promise<number> 
 
     for (let i = 0; i < page.docs.length; i += READ_CONCURRENCY) {
       const slice = page.docs.slice(i, i + READ_CONCURRENCY);
-      const results = await Promise.all(
-        slice.map((d) => backupUnit(db, backupWriter, d.id, d.data(), meta).catch(() => null)),
+      await Promise.all(
+        slice.map(async (d) => {
+          const unitData = d.data();
+          const subDocs =
+            (unitData.submissionCount ?? 0) > 0
+              ? (await d.ref.collection("submissions").get()).docs
+              : [];
+          const backupRef = db.collection("auditUnitsDeleted").doc(`${meta.stamp}__${d.id}`);
+          backupWriter
+            .set(backupRef, backupDoc(d.id, unitData, subDocs.length, meta))
+            .catch(() => failed.add(d.id));
+          for (const sub of subDocs) {
+            backupWriter
+              .set(backupRef.collection("submissions").doc(sub.id), sub.data())
+              .catch(() => failed.add(d.id));
+          }
+          targets.push({ unitId: d.id, unitRef: d.ref, subRefs: subDocs.map((s) => s.ref) });
+        }),
       );
-      for (const t of results) if (t) targets.push(t);
     }
 
+    scanned += page.size;
     last = page.docs[page.docs.length - 1];
+    console.log(`[delete-all] phase 1: read ${scanned}/${total} (${elapsed()})`);
     if (page.size < PAGE_SIZE) break;
   }
-  await backupWriter.close(); // every backup in `targets` is now committed
+
+  await backupWriter.close(); // every backup is now committed
+  const backedUp = targets.filter((t) => !failed.has(t.unitId));
+  console.log(
+    `[delete-all] phase 1 done: ${backedUp.length} backed up, ${failed.size} failed (${elapsed()})`,
+  );
 
   // Phase 2 — delete only the units whose backup succeeded.
   const deleteWriter = db.bulkWriter();
-  for (const t of targets) scheduleDelete(deleteWriter, t);
+  for (const t of backedUp) {
+    for (const subRef of t.subRefs) swallow(deleteWriter.delete(subRef));
+    swallow(deleteWriter.delete(t.unitRef));
+  }
   await deleteWriter.close();
+  console.log(`[delete-all] phase 2 done: deleted ${backedUp.length} units (total ${elapsed()})`);
 
-  return targets.length;
+  return backedUp.length;
 }
 
 export async function POST(request: NextRequest) {

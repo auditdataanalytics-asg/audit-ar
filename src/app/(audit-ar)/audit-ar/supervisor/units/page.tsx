@@ -508,7 +508,7 @@ function DeleteAllButton({
             ) : (
               <Trash2 className="mr-1.5 h-4 w-4" />
             )}
-            Hapus Semua
+            {busy ? "Menghapus… jangan tutup" : "Hapus Semua"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Search, UploadCloud, Loader2, Download, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
+import type { QueryDocumentSnapshot, DocumentData } from "firebase/firestore";
 
 import { Input } from "@/components/ui/input";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -32,7 +33,10 @@ import {
 import { StatusBadge, STATUS_LABELS } from "@/components/audit-ar/status-badge";
 import {
   getAuditUnits,
+  getAuditUnitsPage,
   getSubmission,
+  countUnits,
+  countAuditedUnits,
   deleteUnit,
   deleteAllUnits,
 } from "@/lib/audit-ar/firestore";
@@ -46,62 +50,107 @@ import {
 } from "@/lib/audit-ar/types";
 import { cn } from "@/lib/utils";
 
+const PAGE_SIZE = 50;
+
 export default function SupervisorUnitsPage() {
   const { isSupervisor } = useAuditAr();
   const [units, setUnits] = useState<AuditUnitDoc[]>([]);
+  const [cursor, setCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<UnitAuditStatus | "all">("all");
+  const [total, setTotal] = useState<number | null>(null);
+  const [auditedTotal, setAuditedTotal] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
-  const load = useCallback(() => getAuditUnits().then((u) => setUnits(u)), []);
-
+  // Grand totals (cheap count aggregation) for the header + delete-all dialog.
+  const refreshTotals = useCallback(() => {
+    countUnits()
+      .then(setTotal)
+      .catch(() => setTotal(null));
+    countAuditedUnits()
+      .then(setAuditedTotal)
+      .catch(() => setAuditedTotal(0));
+  }, []);
   useEffect(() => {
-    void load().finally(() => setLoading(false));
-  }, [load]);
+    refreshTotals();
+  }, [refreshTotals, reloadKey]);
 
-  // Optimistic local updates so the list feels instant — the delete route does
-  // the heavy (backup + throttled) work; we don't re-read the whole collection.
-  const removeUnit = useCallback(
-    (id: string) => setUnits((prev) => prev.filter((u) => u.id !== id)),
-    [],
-  );
-  const clearUnits = useCallback(() => setUnits([]), []);
+  // Load page 1 whenever the filter/search changes (search debounced). Only the
+  // current page is read + rendered — never the whole collection.
+  useEffect(() => {
+    let active = true;
+    const t = setTimeout(() => {
+      setLoading(true);
+      getAuditUnitsPage({ statusFilter, search, pageSize: PAGE_SIZE })
+        .then((page) => {
+          if (!active) return;
+          setUnits(page.units);
+          setCursor(page.cursor);
+          setHasMore(page.hasMore);
+        })
+        .catch(() => {
+          if (active) toast.error("Gagal memuat unit");
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    }, 250);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [statusFilter, search, reloadKey]);
 
-  const auditedCount = useMemo(
-    () => units.filter((u) => u.submissionCount > 0).length,
-    [units],
-  );
+  async function loadMore() {
+    if (!cursor) return;
+    setLoadingMore(true);
+    try {
+      const page = await getAuditUnitsPage({
+        statusFilter,
+        search,
+        cursor,
+        pageSize: PAGE_SIZE,
+      });
+      setUnits((prev) => [...prev, ...page.units]);
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
+    } catch {
+      toast.error("Gagal memuat lebih banyak");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return units
-      .filter((u) => (statusFilter === "all" ? true : u.status === statusFilter))
-      .filter((u) =>
-        !q
-          ? true
-          : [u.unitNumber, u.projectName, u.cluster, u.brandName]
-              .filter(Boolean)
-              .some((v) => v.toLowerCase().includes(q)),
-      )
-      .sort((a, b) =>
-        a.projectName === b.projectName
-          ? a.unitNumberNorm.localeCompare(b.unitNumberNorm)
-          : a.projectName.localeCompare(b.projectName),
-      );
-  }, [units, search, statusFilter]);
+  const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+  const removeUnit = useCallback((id: string) => {
+    setUnits((prev) => prev.filter((u) => u.id !== id));
+    setTotal((t) => (t == null ? t : Math.max(0, t - 1)));
+  }, []);
+  const afterDeleteAll = useCallback(() => {
+    setUnits([]);
+    setCursor(null);
+    setHasMore(false);
+    setTotal(0);
+    setAuditedTotal(0);
+  }, []);
 
   async function handleExport() {
     setExporting(true);
     try {
+      // Export is a full dump — read every unit (explicit, occasional action).
+      const all = await getAuditUnits();
       const subs = await Promise.all(
-        filtered.map((u) =>
+        all.map((u) =>
           u.currentSubmissionId
             ? getSubmission(u.id, u.currentSubmissionId)
             : Promise.resolve(null),
         ),
       );
-      const rows = filtered.map((u, i) => {
+      const rows = all.map((u, i) => {
         const s = subs[i];
         const row: Record<string, string> = {
           "Nomor Unit": u.unitNumber,
@@ -121,9 +170,7 @@ export default function SupervisorUnitsPage() {
               ? "Berpenghuni"
               : "Tidak berpenghuni"
             : "",
-          "PLT/Pelataran": s
-            ? formatPltStatus(s.pltStatus, s.pltNotes, s.pltExists)
-            : "",
+          "PLT/Pelataran": s ? formatPltStatus(s.pltStatus, s.pltNotes, s.pltExists) : "",
           "Kondisi Bangunan": s?.buildingConditionLabel ?? "",
           "Tipe Bangunan": s?.buildingTypeLabel ?? "",
           Catatan: s?.remarks ?? "",
@@ -152,27 +199,25 @@ export default function SupervisorUnitsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="font-heading text-2xl font-bold tracking-tight">
-            Unit & Master Data
-          </h1>
+          <h1 className="font-heading text-2xl font-bold tracking-tight">Unit & Master Data</h1>
           <p className="text-sm text-muted-foreground">
-            {units.length} unit terdaftar
+            {total ?? "…"} unit terdaftar
           </p>
         </div>
         <div className="flex gap-2">
-          {isSupervisor && units.length > 0 && (
+          {isSupervisor && (total ?? 0) > 0 && (
             <DeleteAllButton
-              total={units.length}
-              auditedCount={auditedCount}
-              onDeleted={clearUnits}
-              onError={load}
+              total={total ?? 0}
+              auditedCount={auditedTotal}
+              onDeleted={afterDeleteAll}
+              onError={reload}
             />
           )}
           <Button
             variant="outline"
             className="gap-1.5"
             onClick={handleExport}
-            disabled={exporting || units.length === 0}
+            disabled={exporting || (total ?? 0) === 0}
           >
             {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             Export
@@ -191,7 +236,7 @@ export default function SupervisorUnitsPage() {
         <div className="relative flex-1 sm:max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Cari unit, proyek, cluster..."
+            placeholder="Cari nomor unit (awalan)..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
@@ -214,52 +259,63 @@ export default function SupervisorUnitsPage() {
         <div className="flex justify-center py-16">
           <Loader2 className="h-6 w-6 animate-spin text-primary" />
         </div>
-      ) : filtered.length === 0 ? (
+      ) : units.length === 0 ? (
         <EmptyState
-          title={units.length === 0 ? "Belum ada master data" : "Tidak ada unit"}
+          title={total === 0 ? "Belum ada master data" : "Tidak ada unit"}
           description={
-            units.length === 0
+            total === 0
               ? "Import file Excel untuk memulai."
-              : "Tidak ada unit yang cocok dengan filter."
+              : "Tidak ada unit yang cocok dengan filter/pencarian."
           }
         />
       ) : (
-        <div className="rounded-lg border border-border/50 overflow-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Nomor Unit</TableHead>
-                <TableHead>Proyek</TableHead>
-                <TableHead>Cluster</TableHead>
-                <TableHead>Tipe</TableHead>
-                <TableHead>Status</TableHead>
-                {isSupervisor && <TableHead className="w-10 text-right">Aksi</TableHead>}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((u) => (
-                <TableRow key={u.id} className="cursor-pointer">
-                  <TableCell className="font-medium">
-                    <Link href={`/audit-ar/supervisor/units/${u.id}`} className="hover:underline">
-                      {u.unitNumber}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{u.projectName}</TableCell>
-                  <TableCell className="text-muted-foreground">{u.cluster || "-"}</TableCell>
-                  <TableCell className="text-muted-foreground">{u.unitType || "-"}</TableCell>
-                  <TableCell>
-                    <StatusBadge status={u.status} />
-                  </TableCell>
-                  {isSupervisor && (
-                    <TableCell className="text-right">
-                      <DeleteUnitButton unit={u} onDeleted={removeUnit} onError={load} />
-                    </TableCell>
-                  )}
+        <>
+          <div className="rounded-lg border border-border/50 overflow-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Nomor Unit</TableHead>
+                  <TableHead>Proyek</TableHead>
+                  <TableHead>Cluster</TableHead>
+                  <TableHead>Tipe</TableHead>
+                  <TableHead>Status</TableHead>
+                  {isSupervisor && <TableHead className="w-10 text-right">Aksi</TableHead>}
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {units.map((u) => (
+                  <TableRow key={u.id} className="cursor-pointer">
+                    <TableCell className="font-medium">
+                      <Link href={`/audit-ar/supervisor/units/${u.id}`} className="hover:underline">
+                        {u.unitNumber}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{u.projectName}</TableCell>
+                    <TableCell className="text-muted-foreground">{u.cluster || "-"}</TableCell>
+                    <TableCell className="text-muted-foreground">{u.unitType || "-"}</TableCell>
+                    <TableCell>
+                      <StatusBadge status={u.status} />
+                    </TableCell>
+                    {isSupervisor && (
+                      <TableCell className="text-right">
+                        <DeleteUnitButton unit={u} onDeleted={removeUnit} onError={reload} />
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+
+          {hasMore && (
+            <div className="flex justify-center">
+              <Button variant="outline" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                Muat lebih banyak
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -428,11 +484,9 @@ function DeleteAllButton({
           <AlertDialogTitle>Hapus SEMUA unit?</AlertDialogTitle>
           <AlertDialogDescription>
             {total} unit akan dihapus
-            {auditedCount > 0
-              ? `, ${auditedCount} di antaranya sudah memiliki data audit`
-              : ""}
-            . Seluruh data (unit + riwayat submission) dipindahkan ke arsip backup
-            lebih dulu, tetapi hilang dari aplikasi. Ketik{" "}
+            {auditedCount > 0 ? `, ${auditedCount} di antaranya sudah memiliki data audit` : ""}
+            . Seluruh data (unit + riwayat submission) dipindahkan ke arsip backup lebih dulu,
+            tetapi hilang dari aplikasi. Ketik{" "}
             <b className="text-foreground">{DELETE_ALL_PHRASE}</b> untuk konfirmasi.
           </AlertDialogDescription>
         </AlertDialogHeader>

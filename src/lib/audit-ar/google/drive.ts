@@ -53,35 +53,6 @@ export async function ensureUnitFolder(
 }
 
 /**
- * Move a per-unit folder into `AuditAR/_Deleted/{dateStr}`, renaming it to
- * `label`, so a deleted unit's photos are archived (recoverable) instead of
- * destroyed. Returns the dated backup folder id. Best-effort: callers wrap this
- * in try/catch — on failure the folder simply stays in place.
- */
-export async function moveFolderToBackup(
-  folderId: string,
-  label: string,
-  dateStr: string,
-): Promise<string> {
-  const drive = await getDrive();
-  const configuredRoot = process.env.AUDIT_AR_DRIVE_ROOT_FOLDER_ID;
-  const appFolder = await findOrCreateFolder("AuditAR", configuredRoot || undefined);
-  const deletedRoot = await findOrCreateFolder("_Deleted", appFolder);
-  const dateFolder = await findOrCreateFolder(dateStr, deletedRoot);
-
-  const meta = await drive.files.get({ fileId: folderId, fields: "parents" });
-  const oldParents = (meta.data.parents ?? []).join(",");
-  await drive.files.update({
-    fileId: folderId,
-    addParents: dateFolder,
-    removeParents: oldParents || undefined,
-    requestBody: { name: label },
-    fields: "id",
-  });
-  return dateFolder;
-}
-
-/**
  * Best-effort permanent delete of a Drive file by id. Used when a photo is
  * removed from a draft or a draft is discarded, so the Drive file doesn't orphan
  * (Threat 7). Errors are swallowed (the file simply stays) — mirrors the

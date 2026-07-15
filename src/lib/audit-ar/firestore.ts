@@ -5,16 +5,20 @@ import {
   documentId,
   getDoc,
   getDocs,
+  getCountFromServer,
   onSnapshot,
   setDoc,
   updateDoc,
   query,
   where,
   orderBy,
+  limit,
+  startAfter,
   writeBatch,
   runTransaction,
   serverTimestamp,
   type QueryConstraint,
+  type QueryDocumentSnapshot,
   type DocumentData,
   type Firestore,
 } from "firebase/firestore";
@@ -29,6 +33,7 @@ import type {
   AuditCategoryType,
   OccupancyStatus,
   PltStatus,
+  UnitAuditStatus,
 } from "./types";
 import type { AuditUnitRow } from "./validators";
 import { normalizeUnitNumber, unitIdFromNumber } from "./unit-id";
@@ -59,6 +64,80 @@ export async function getAuditUnits(constraints: QueryConstraint[] = []) {
 export async function getAuditUnit(unitId: string) {
   const snap = await getDoc(doc(db(), "auditUnits", unitId));
   return snap.exists() ? ({ id: snap.id, ...snap.data() } as AuditUnitDoc) : null;
+}
+
+/**
+ * Cheap aggregate count of units matching `constraints` (one aggregation read,
+ * not one-read-per-doc). Used by dashboards instead of reading the whole
+ * collection just to tally status counts.
+ */
+export async function countUnits(constraints: QueryConstraint[] = []): Promise<number> {
+  const snap = await getCountFromServer(query(collection(db(), "auditUnits"), ...constraints));
+  return snap.data().count;
+}
+
+export function countUnitsByStatus(status: UnitAuditStatus): Promise<number> {
+  return countUnits([where("status", "==", status)]);
+}
+
+/** Units currently locked by `uid` — a lock only exists on that user's in-progress draft. */
+export function countMyLockedUnits(uid: string): Promise<number> {
+  return countUnits([where("lock.lockedBy", "==", uid)]);
+}
+
+/** Only the units awaiting review (status == pending) — the review queue, no full-collection scan. */
+export function getPendingReviewUnits(): Promise<AuditUnitDoc[]> {
+  return getAuditUnits([where("status", "==", "pending")]);
+}
+
+/** Count of units that already have at least one submission (used by the delete-all warning). */
+export function countAuditedUnits(): Promise<number> {
+  return countUnits([where("submissionCount", ">", 0)]);
+}
+
+export interface AuditUnitsPage {
+  units: AuditUnitDoc[];
+  cursor: QueryDocumentSnapshot<DocumentData> | null;
+  hasMore: boolean;
+}
+
+/**
+ * One page of units, ordered by `unitNumberNorm`. Avoids reading the entire
+ * collection on every list view. `search` does a prefix match on the normalized
+ * unit number; `statusFilter` filters server-side. Pass the previous page's
+ * `cursor` to load the next page.
+ *
+ * Needs the composite index (status ASC, unitNumberNorm ASC) — see firestore.indexes.json.
+ */
+export async function getAuditUnitsPage(opts: {
+  statusFilter?: UnitAuditStatus | "all";
+  search?: string;
+  cursor?: QueryDocumentSnapshot<DocumentData> | null;
+  pageSize?: number;
+} = {}): Promise<AuditUnitsPage> {
+  const pageSize = opts.pageSize ?? 50;
+  const constraints: QueryConstraint[] = [];
+
+  if (opts.statusFilter && opts.statusFilter !== "all") {
+    constraints.push(where("status", "==", opts.statusFilter));
+  }
+  const q = opts.search?.trim() ? normalizeUnitNumber(opts.search) : "";
+  if (q) {
+    constraints.push(where("unitNumberNorm", ">=", q));
+    constraints.push(where("unitNumberNorm", "<", q + ""));
+  }
+  constraints.push(orderBy("unitNumberNorm"));
+  if (opts.cursor) constraints.push(startAfter(opts.cursor));
+  constraints.push(limit(pageSize + 1)); // fetch one extra to detect hasMore
+
+  const snap = await getDocs(query(collection(db(), "auditUnits"), ...constraints));
+  const hasMore = snap.docs.length > pageSize;
+  const pageDocs = hasMore ? snap.docs.slice(0, pageSize) : snap.docs;
+  return {
+    units: pageDocs.map((d) => ({ id: d.id, ...d.data() }) as AuditUnitDoc),
+    cursor: pageDocs.length ? pageDocs[pageDocs.length - 1] : null,
+    hasMore,
+  };
 }
 
 /**

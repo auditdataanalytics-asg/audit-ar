@@ -1,48 +1,41 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 import { Stat, StatGroup } from "@/components/shared/stat";
-import { getAuditUnits, LOCK_TTL_MS } from "@/lib/audit-ar/firestore";
+import { countUnitsByStatus, countMyLockedUnits } from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
-import type { AuditUnitDoc } from "@/lib/audit-ar/types";
 
 export default function FieldDashboardPage() {
   const { user } = useAuditAr();
-  const [units, setUnits] = useState<AuditUnitDoc[]>([]);
+  const [stats, setStats] = useState({ available: 0, myDrafts: 0, rejected: 0 });
   const [loading, setLoading] = useState(true);
-  const [loadedAt, setLoadedAt] = useState(0);
 
   useEffect(() => {
-    getAuditUnits()
-      .then((nextUnits) => {
-        setUnits(nextUnits);
-        setLoadedAt(Date.now());
+    if (!user) return;
+    let active = true;
+    // Cheap aggregate counts instead of reading the whole units collection.
+    Promise.all([
+      countUnitsByStatus("not_started"),
+      countMyLockedUnits(user.uid),
+      countUnitsByStatus("rejected"),
+    ])
+      .then(([available, myDrafts, rejected]) => {
+        if (active) setStats({ available, myDrafts, rejected });
       })
       .catch(() => {
-        toast.error("Gagal memuat unit audit");
-        setUnits([]);
-        setLoadedAt(Date.now());
+        if (active) toast.error("Gagal memuat ringkasan audit");
       })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const stats = useMemo(() => {
-    const available = units.filter(
-      (u) =>
-        u.status === "not_started" ||
-        (u.status === "draft" &&
-          (!u.lock || u.lock.lockedAt.toMillis() + LOCK_TTL_MS < loadedAt)),
-    ).length;
-    const myDrafts = units.filter(
-      (u) => u.status === "draft" && u.lock?.lockedBy === user?.uid,
-    ).length;
-    const rejected = units.filter((u) => u.status === "rejected").length;
-    return { available, myDrafts, rejected };
-  }, [loadedAt, units, user?.uid]);
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   if (loading) {
     return (

@@ -20,6 +20,14 @@
       "collectionGroup": "auditUnits",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "unitNumberNorm", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "auditUnits",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "projectName", "order": "ASCENDING" },
         { "fieldPath": "unitNumberNorm", "order": "ASCENDING" }
       ]

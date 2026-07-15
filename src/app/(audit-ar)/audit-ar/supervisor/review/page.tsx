@@ -6,7 +6,7 @@ import { Loader2, ChevronRight } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/empty-state";
-import { getAuditUnits } from "@/lib/audit-ar/firestore";
+import { getPendingReviewUnits } from "@/lib/audit-ar/firestore";
 import { formatRelative } from "@/lib/shared/date-format";
 import type { AuditUnitDoc } from "@/lib/audit-ar/types";
 
@@ -15,19 +15,18 @@ export default function ReviewQueuePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    getAuditUnits()
+    // Reads only pending units, not the whole collection.
+    getPendingReviewUnits()
       .then(setUnits)
       .finally(() => setLoading(false));
   }, []);
 
   const pending = useMemo(
     () =>
-      units
-        .filter((u) => u.status === "pending")
-        .sort(
-          (a, b) =>
-            (a.lastSubmittedAt?.toMillis() ?? 0) - (b.lastSubmittedAt?.toMillis() ?? 0),
-        ),
+      [...units].sort(
+        (a, b) =>
+          (a.lastSubmittedAt?.toMillis() ?? 0) - (b.lastSubmittedAt?.toMillis() ?? 0),
+      ),
     [units],
   );
 

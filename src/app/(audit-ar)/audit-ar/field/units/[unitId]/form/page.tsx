@@ -38,13 +38,13 @@ import {
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { useAuditLockHeartbeat } from "@/lib/audit-ar/hooks/use-audit-lock";
 import {
-  getAuditUnit,
   getCategories,
   createSubmission,
   saveDraft,
   deleteDraft,
-  LOCK_TTL_MS,
+  subscribeAuditUnit,
 } from "@/lib/audit-ar/firestore";
+import { isLockOwnedLive } from "@/lib/audit-ar/lock-expiry";
 import { auditSubmissionSchema } from "@/lib/audit-ar/validators";
 import {
   OCCUPANCY_PHOTO_FIELDS,
@@ -80,7 +80,6 @@ export default function FieldAuditFormPage() {
   const [types, setTypes] = useState<AuditCategoryDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [loadedAt, setLoadedAt] = useState(0);
 
   // form state
   const [occupancy, setOccupancy] = useState<OccupancyStatus | "">("");
@@ -104,57 +103,70 @@ export default function FieldAuditFormPage() {
   // Re-entrancy guard: blocks a second submit dispatched before React re-renders
   // the disabled button (physical double-tap).
   const submittingRef = useRef(false);
+  // Set true when we navigate away on purpose (submit / delete draft), so the
+  // lock-loss redirect below doesn't fire on our own intentional lock clear.
+  const leavingRef = useRef(false);
 
-  const ownsLock = useMemo(() => {
-    return (
-      !!unit?.lock &&
-      unit.lock.lockedBy === user?.uid &&
-      unit.lock.lockedAt.toMillis() + LOCK_TTL_MS > loadedAt
-    );
-  }, [loadedAt, unit, user?.uid]);
+  // Owner match, re-derived whenever the unit snapshot changes (Threat 5). Kept
+  // clock-free so it's pure in render; server-authoritative TTL validity is
+  // enforced by the heartbeat, the redirect effect below, and saveDraft.
+  const ownsLock = useMemo(
+    () => !!unit?.lock && unit.lock.lockedBy === user?.uid,
+    [unit, user?.uid],
+  );
 
   useAuditLockHeartbeat(unitId, user?.uid ?? null, ownsLock && !submitting);
 
+  const redirectLockLost = useCallback(() => {
+    if (leavingRef.current) return; // already navigating away
+    leavingRef.current = true;
+    toast.error("Kunci draft tidak aktif. Mulai ulang dari halaman unit.");
+    router.replace(`/audit-ar/field/units/${unitId}`);
+  }, [router, unitId]);
+
+  // Category lists — fetched once (they don't change during an edit session).
   useEffect(() => {
     let cancelled = false;
-
-    async function loadInitial() {
-      if (!unitId) return;
-      try {
-        const [u, cond, typ] = await Promise.all([
-          getAuditUnit(unitId),
-          getCategories("buildingCondition"),
-          getCategories("buildingType"),
-        ]);
-        if (cancelled) return;
-        setUnit(u);
-        setConditions(cond.filter((c) => c.isActive));
-        setTypes(typ.filter((c) => c.isActive));
-        setLoadedAt(Date.now());
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    void loadInitial();
+    void Promise.all([
+      getCategories("buildingCondition"),
+      getCategories("buildingType"),
+    ]).then(([cond, typ]) => {
+      if (cancelled) return;
+      setConditions(cond.filter((c) => c.isActive));
+      setTypes(typ.filter((c) => c.isActive));
+    });
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Live unit subscription — a lock takeover / expiry sweep / clear is seen
+  // immediately instead of frozen at mount (Threat 5).
+  useEffect(() => {
+    if (!unitId) return;
+    const unsub = subscribeAuditUnit(
+      unitId,
+      (u) => {
+        setUnit(u);
+        setLoading(false);
+      },
+      () => setLoading(false),
+    );
+    return unsub;
   }, [unitId]);
 
-  // Redirect out if the lock isn't ours (someone else took it / it expired).
+  // Redirect out if the lock isn't ours (someone else took it / it expired /
+  // the cron swept it). Not during our own submit or intentional leave.
   useEffect(() => {
-    if (loading || !unit || !user) return;
-    const now = Date.now();
-    const mine =
-      !!unit.lock &&
-      unit.lock.lockedBy === user.uid &&
-      unit.lock.lockedAt.toMillis() + LOCK_TTL_MS > now;
-    if (!mine) {
-      toast.error("Kunci draft tidak aktif. Mulai ulang dari halaman unit.");
-      router.replace(`/audit-ar/field/units/${unit.id}`);
-    }
-  }, [loading, unit, user, router]);
+    if (loading || !unit || !user || submitting || leavingRef.current) return;
+    const mine = isLockOwnedLive(
+      unit.lock?.lockedBy,
+      unit.lock?.lockedAt?.toMillis(),
+      user.uid,
+      Date.now(),
+    );
+    if (!mine) redirectLockLost();
+  }, [loading, unit, user, submitting, redirectLockLost]);
 
   // Hydrate the form from a previously saved draft (owned by this user).
   useEffect(() => {
@@ -175,21 +187,30 @@ export default function FieldAuditFormPage() {
   const persistDraft = useCallback(
     async (attachmentsSnapshot: AuditAttachment[]) => {
       if (!unit || !user) return;
-      try {
-        await saveDraft(unit.id, user.uid, {
-          occupancyStatus: occupancy,
-          pltStatus,
-          pltNotes,
-          buildingConditionId: conditionId,
-          buildingTypeId: typeId,
-          remarks,
-          attachments: attachmentsSnapshot,
-        });
-      } catch {
-        // best-effort; the next change re-attempts the save
-      }
+      const res = await saveDraft(unit.id, user.uid, {
+        occupancyStatus: occupancy,
+        pltStatus,
+        pltNotes,
+        buildingConditionId: conditionId,
+        buildingTypeId: typeId,
+        remarks,
+        attachments: attachmentsSnapshot,
+      });
+      // A lost lock (silent TTL expiry the snapshot can't observe) surfaces here
+      // rather than failing silently and losing the auditor's input (Threat 5).
+      if (!res.ok && res.reason === "not_locked") redirectLockLost();
     },
-    [unit, user, occupancy, pltStatus, pltNotes, conditionId, typeId, remarks],
+    [
+      unit,
+      user,
+      occupancy,
+      pltStatus,
+      pltNotes,
+      conditionId,
+      typeId,
+      remarks,
+      redirectLockLost,
+    ],
   );
 
   // Auto-save the draft (debounced) whenever the form changes, once hydrated.
@@ -263,11 +284,13 @@ export default function FieldAuditFormPage() {
       if (res.ok) {
         toast.success("Audit terkirim untuk review");
         navigated = true;
+        leavingRef.current = true; // our own lock clear — don't trip the redirect
         router.replace(`/audit-ar/field/units/${unit.id}`);
       } else if (res.reason === "already_submitted") {
         // A duplicate submit (double-tap / retry) — the audit is already in review.
         toast.info("Audit ini sudah terkirim");
         navigated = true;
+        leavingRef.current = true;
         router.replace(`/audit-ar/field/units/${unit.id}`);
       } else {
         toast.error("Gagal mengirim audit");
@@ -286,11 +309,13 @@ export default function FieldAuditFormPage() {
 
   async function handleDeleteDraft() {
     if (!unit || !user) return;
+    leavingRef.current = true; // our own lock clear — don't trip the redirect
     try {
       await deleteDraft(unit.id, user.uid);
       toast.success("Draft dihapus");
       router.replace(`/audit-ar/field/units/${unit.id}`);
     } catch {
+      leavingRef.current = false; // stay on the form; keep watching the lock
       toast.error("Gagal menghapus draft");
     }
   }

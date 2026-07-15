@@ -5,6 +5,7 @@ import {
   documentId,
   getDoc,
   getDocs,
+  onSnapshot,
   setDoc,
   updateDoc,
   query,
@@ -58,6 +59,24 @@ export async function getAuditUnits(constraints: QueryConstraint[] = []) {
 export async function getAuditUnit(unitId: string) {
   const snap = await getDoc(doc(db(), "auditUnits", unitId));
   return snap.exists() ? ({ id: snap.id, ...snap.data() } as AuditUnitDoc) : null;
+}
+
+/**
+ * Live-subscribe to a single unit doc. Returns the unsubscribe fn. Used by the
+ * field-audit form so a lock takeover / expiry sweep / clear is seen immediately
+ * instead of being frozen at mount (Threat 5). Mirrors the onSnapshot + unsubscribe
+ * pattern in use-auth.ts.
+ */
+export function subscribeAuditUnit(
+  unitId: string,
+  onNext: (unit: AuditUnitDoc | null) => void,
+  onError?: (error: Error) => void,
+): () => void {
+  return onSnapshot(
+    doc(db(), "auditUnits", unitId),
+    (snap) => onNext(snap.exists() ? ({ id: snap.id, ...snap.data() } as AuditUnitDoc) : null),
+    (error) => onError?.(error),
+  );
 }
 
 export interface UnitDiffEntry {

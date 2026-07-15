@@ -3,6 +3,7 @@ import {
   FieldValue,
   type BulkWriter,
   type DocumentData,
+  type DocumentReference,
   type Firestore,
   type Query,
   type QueryDocumentSnapshot,
@@ -16,13 +17,16 @@ import { moveFolderToBackup } from "@/lib/audit-ar/google/drive";
 // scripts/restore-deleted-unit.ts. Clients cannot delete units directly
 // (firestore.rules `allow delete: if false`) — this is the only path.
 //
-// All writes go through a Firestore BulkWriter, which self-throttles (the
-// 500/50/5 ramp) and retries RESOURCE_EXHAUSTED with exponential backoff, so a
-// bulk delete never hammers Firestore past its rate limit. Units that were never
-// audited (submissionCount === 0) skip the submissions read+delete entirely.
+// Two-phase to guarantee "backup-before-delete": phase 1 writes+confirms every
+// backup (a unit is only queued for deletion once its backup write resolves),
+// phase 2 deletes the originals. So a unit is never destroyed without a
+// recoverable copy, even if a write fails. All writes go through a Firestore
+// BulkWriter (self-throttles via the 500/50/5 ramp + retries RESOURCE_EXHAUSTED
+// with backoff), so a bulk delete never outruns Firestore's rate limit. Units
+// that were never audited (submissionCount === 0) skip the submissions read.
 
 const PAGE_SIZE = 300;
-const READ_CONCURRENCY = 25; // bound concurrent submission reads per page
+const READ_CONCURRENCY = 25; // bound concurrent unit-backup pipelines per page
 
 function dateStamp(): { date: string; stamp: string } {
   const d = new Date();
@@ -41,24 +45,30 @@ interface DeleteMeta {
   stamp: string; // YYYYMMDD-HHMMSS (backup doc id prefix)
 }
 
+interface DeleteTarget {
+  unitRef: DocumentReference;
+  subRefs: DocumentReference[];
+}
+
 const swallow = (p: Promise<unknown>) => {
-  // BulkWriter routes real failures through its retry policy; we only attach
-  // this so an eventually-abandoned op doesn't surface as an unhandled rejection.
+  // Phase-2 deletes are best-effort: a failed delete just leaves the (already
+  // backed-up) unit in place, never data loss. Swallow so an abandoned op does
+  // not surface as an unhandled rejection.
   void p.catch(() => {});
 };
 
 /**
- * Schedule (on the shared BulkWriter) the archival of one unit + its submissions
- * and the deletion of the originals. Reads submissions only when the unit was
- * actually audited. Does NOT touch Drive.
+ * Phase 1 — archive one unit + its submissions and AWAIT confirmation that the
+ * backup writes landed. Returns the refs to delete in phase 2. Throws if the
+ * backup fails, so the caller can skip deleting that unit.
  */
-async function archiveAndDelete(
+async function backupUnit(
   db: Firestore,
   writer: BulkWriter,
   unitId: string,
   unitData: DocumentData,
   meta: DeleteMeta,
-): Promise<void> {
+): Promise<DeleteTarget> {
   const unitRef = db.collection("auditUnits").doc(unitId);
   const backupRef = db.collection("auditUnitsDeleted").doc(`${meta.stamp}__${unitId}`);
 
@@ -67,7 +77,9 @@ async function archiveAndDelete(
       ? (await unitRef.collection("submissions").get()).docs
       : [];
 
-  swallow(
+  // Submissions archived as a subcollection so a long audit history never
+  // approaches Firestore's 1 MB document limit.
+  const writes: Promise<unknown>[] = [
     writer.set(backupRef, {
       originalUnitId: unitId,
       unitNumber: unitData.unitNumber ?? "",
@@ -79,17 +91,22 @@ async function archiveAndDelete(
       deletedAt: FieldValue.serverTimestamp(),
       unit: unitData,
     }),
-  );
-  // Submissions archived as a subcollection so a long audit history never
-  // approaches Firestore's 1 MB document limit.
-  for (const sub of subDocs) {
-    swallow(writer.set(backupRef.collection("submissions").doc(sub.id), sub.data()));
-    swallow(writer.delete(sub.ref));
-  }
-  swallow(writer.delete(unitRef));
+    ...subDocs.map((sub) =>
+      writer.set(backupRef.collection("submissions").doc(sub.id), sub.data()),
+    ),
+  ];
+  await Promise.all(writes); // rejects if any backup write ultimately fails
+
+  return { unitRef, subRefs: subDocs.map((s) => s.ref) };
 }
 
-/** Single-unit delete: archive + delete + best-effort Drive folder move. Returns false if the unit is gone. */
+/** Phase 2 — schedule deletion of a unit's originals (submissions first, then the unit doc). */
+function scheduleDelete(writer: BulkWriter, target: DeleteTarget) {
+  for (const subRef of target.subRefs) swallow(writer.delete(subRef));
+  swallow(writer.delete(target.unitRef));
+}
+
+/** Single-unit delete: backup (confirmed) → delete → best-effort Drive folder move. Returns false if the unit is gone. */
 async function deleteOneUnit(
   db: Firestore,
   unitId: string,
@@ -99,9 +116,15 @@ async function deleteOneUnit(
   if (!snap.exists) return false;
   const unitData = snap.data() as DocumentData;
 
-  const writer = db.bulkWriter();
-  await archiveAndDelete(db, writer, unitId, unitData, meta);
-  await writer.close();
+  // Phase 1 — backup (throws if it fails, so we never reach the delete).
+  const backupWriter = db.bulkWriter();
+  const target = await backupUnit(db, backupWriter, unitId, unitData, meta);
+  await backupWriter.close();
+
+  // Phase 2 — delete originals.
+  const deleteWriter = db.bulkWriter();
+  scheduleDelete(deleteWriter, target);
+  await deleteWriter.close();
 
   // Best-effort Drive archival (photos stay recoverable regardless: the folder
   // id is recorded in the backup doc).
@@ -119,13 +142,14 @@ async function deleteOneUnit(
   return true;
 }
 
-/** Bulk delete every unit. Drive folders are only recorded (not moved) to keep the run fast and quota-safe. */
+/** Bulk delete every unit: back up + confirm all first, then delete only the confirmed ones. */
 async function deleteAllUnits(db: Firestore, meta: DeleteMeta): Promise<number> {
-  const writer = db.bulkWriter();
-  let deleted = 0;
+  const backupWriter = db.bulkWriter();
+  const targets: DeleteTarget[] = [];
   let last: QueryDocumentSnapshot | null = null;
-  // Page by document id. The cursor is a stable id even after a page is deleted,
-  // so the loop always advances and never revisits or stalls.
+
+  // Phase 1 — page every unit and back it up. All units still exist here, so
+  // paging by document id advances cleanly.
   for (;;) {
     let q: Query = db.collection("auditUnits").orderBy("__name__").limit(PAGE_SIZE);
     if (last) q = q.startAfter(last);
@@ -134,24 +158,25 @@ async function deleteAllUnits(db: Firestore, meta: DeleteMeta): Promise<number> 
 
     for (let i = 0; i < page.docs.length; i += READ_CONCURRENCY) {
       const slice = page.docs.slice(i, i + READ_CONCURRENCY);
-      await Promise.all(
-        slice.map(async (d) => {
-          try {
-            await archiveAndDelete(db, writer, d.id, d.data(), meta);
-            deleted++;
-          } catch {
-            // Skip this unit; the cursor still advances past it.
-          }
-        }),
+      const results = await Promise.all(
+        slice.map((d) =>
+          backupUnit(db, backupWriter, d.id, d.data(), meta).catch(() => null),
+        ),
       );
+      for (const t of results) if (t) targets.push(t);
     }
 
     last = page.docs[page.docs.length - 1];
     if (page.size < PAGE_SIZE) break;
   }
+  await backupWriter.close(); // every backup in `targets` is now committed
 
-  await writer.close(); // flush + await all throttled writes
-  return deleted;
+  // Phase 2 — delete only the units whose backup succeeded.
+  const deleteWriter = db.bulkWriter();
+  for (const t of targets) scheduleDelete(deleteWriter, t);
+  await deleteWriter.close();
+
+  return targets.length;
 }
 
 export async function POST(request: NextRequest) {

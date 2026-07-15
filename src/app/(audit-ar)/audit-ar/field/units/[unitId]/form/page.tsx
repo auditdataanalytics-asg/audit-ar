@@ -106,6 +106,11 @@ export default function FieldAuditFormPage() {
   // Set true when we navigate away on purpose (submit / delete draft), so the
   // lock-loss redirect below doesn't fire on our own intentional lock clear.
   const leavingRef = useRef(false);
+  // Threat 8: don't setState/persist after unmount, abort in-flight uploads, and
+  // revoke object-URL previews on unmount.
+  const mountedRef = useRef(true);
+  const uploadAbortRef = useRef<Set<AbortController>>(new Set());
+  const localPreviewsRef = useRef<Record<string, string>>({});
 
   // Owner match, re-derived whenever the unit snapshot changes (Threat 5). Kept
   // clock-free so it's pure in render; server-authoritative TTL validity is
@@ -154,6 +159,26 @@ export default function FieldAuditFormPage() {
     );
     return unsub;
   }, [unitId]);
+
+  // Keep a live mirror of the object-URL previews so unmount cleanup revokes them.
+  useEffect(() => {
+    localPreviewsRef.current = localPreviews;
+  }, [localPreviews]);
+
+  // Unmount: mark unmounted, abort in-flight uploads, revoke object URLs so an
+  // upload that resolves after we leave can't revive the draft or leak memory.
+  useEffect(() => {
+    mountedRef.current = true;
+    const aborters = uploadAbortRef.current;
+    return () => {
+      mountedRef.current = false;
+      aborters.forEach((c) => c.abort());
+      aborters.clear();
+      Object.values(localPreviewsRef.current).forEach((url) =>
+        URL.revokeObjectURL(url),
+      );
+    };
+  }, []);
 
   // Redirect out if the lock isn't ours (someone else took it / it expired /
   // the cron swept it). Not during our own submit or intentional leave.
@@ -341,6 +366,8 @@ export default function FieldAuditFormPage() {
       photoLabelKey === PHOTO_LABEL_OTHER ? "photo-other" : photoLabelKey || "photo";
     const fieldKey = `${fieldPrefix}-${Date.now()}`;
 
+    const controller = new AbortController();
+    uploadAbortRef.current.add(controller);
     setPendingUploads((n) => n + 1);
     try {
       const blob = await compressImage(file);
@@ -355,6 +382,7 @@ export default function FieldAuditFormPage() {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: fd,
+        signal: controller.signal,
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -362,6 +390,9 @@ export default function FieldAuditFormPage() {
       }
 
       const data = await res.json();
+      // Bail if we unmounted mid-upload: touching state here would revive a draft
+      // the submission just cleared (Threat 8).
+      if (!mountedRef.current) return;
       const nextAttachment: AuditAttachment = {
         key: fieldKey,
         label,
@@ -381,6 +412,8 @@ export default function FieldAuditFormPage() {
       void persistDraft(next);
       if (photoLabelKey === PHOTO_LABEL_OTHER) setCustomPhotoLabel("");
     } catch (err: unknown) {
+      // An abort is our own unmount cleanup — not a user-facing failure.
+      if (err instanceof Error && err.name === "AbortError") return;
       toast.error(
         err instanceof Error &&
           err.message === "Google Drive is not configured (missing GOOGLE_OAUTH_* env vars)."
@@ -388,8 +421,11 @@ export default function FieldAuditFormPage() {
           : "Gagal mengunggah foto",
       );
     } finally {
-      setPendingUploads((n) => n - 1);
-      input.value = "";
+      uploadAbortRef.current.delete(controller);
+      if (mountedRef.current) {
+        setPendingUploads((n) => n - 1);
+        input.value = "";
+      }
     }
   }
 

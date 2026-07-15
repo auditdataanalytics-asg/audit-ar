@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   FieldValue,
+  type BulkWriter,
   type DocumentData,
   type Firestore,
   type Query,
@@ -14,10 +15,14 @@ import { moveFolderToBackup } from "@/lib/audit-ar/google/drive";
 // BEFORE the originals are removed, so a developer can restore it later via
 // scripts/restore-deleted-unit.ts. Clients cannot delete units directly
 // (firestore.rules `allow delete: if false`) — this is the only path.
+//
+// All writes go through a Firestore BulkWriter, which self-throttles (the
+// 500/50/5 ramp) and retries RESOURCE_EXHAUSTED with exponential backoff, so a
+// bulk delete never hammers Firestore past its rate limit. Units that were never
+// audited (submissionCount === 0) skip the submissions read+delete entirely.
 
-const SUB_DELETE_CHUNK = 400;
 const PAGE_SIZE = 300;
-const DELETE_ALL_CONCURRENCY = 8;
+const READ_CONCURRENCY = 25; // bound concurrent submission reads per page
 
 function dateStamp(): { date: string; stamp: string } {
   const d = new Date();
@@ -34,45 +39,73 @@ interface DeleteMeta {
   deletedByName: string;
   date: string; // YYYY-MM-DD (Drive backup folder)
   stamp: string; // YYYYMMDD-HHMMSS (backup doc id prefix)
-  moveDrive: boolean; // single delete moves the Drive folder; bulk only records it
 }
 
-/** Archive one unit + its submissions, then delete the originals. Returns false if the unit is gone. */
-async function backupAndDeleteUnit(
+const swallow = (p: Promise<unknown>) => {
+  // BulkWriter routes real failures through its retry policy; we only attach
+  // this so an eventually-abandoned op doesn't surface as an unhandled rejection.
+  void p.catch(() => {});
+};
+
+/**
+ * Schedule (on the shared BulkWriter) the archival of one unit + its submissions
+ * and the deletion of the originals. Reads submissions only when the unit was
+ * actually audited. Does NOT touch Drive.
+ */
+async function archiveAndDelete(
+  db: Firestore,
+  writer: BulkWriter,
+  unitId: string,
+  unitData: DocumentData,
+  meta: DeleteMeta,
+): Promise<void> {
+  const unitRef = db.collection("auditUnits").doc(unitId);
+  const backupRef = db.collection("auditUnitsDeleted").doc(`${meta.stamp}__${unitId}`);
+
+  const subDocs =
+    (unitData.submissionCount ?? 0) > 0
+      ? (await unitRef.collection("submissions").get()).docs
+      : [];
+
+  swallow(
+    writer.set(backupRef, {
+      originalUnitId: unitId,
+      unitNumber: unitData.unitNumber ?? "",
+      projectName: unitData.projectName ?? "",
+      driveFolderId: unitData.driveFolderId ?? null,
+      submissionCount: subDocs.length,
+      deletedBy: meta.deletedBy,
+      deletedByName: meta.deletedByName,
+      deletedAt: FieldValue.serverTimestamp(),
+      unit: unitData,
+    }),
+  );
+  // Submissions archived as a subcollection so a long audit history never
+  // approaches Firestore's 1 MB document limit.
+  for (const sub of subDocs) {
+    swallow(writer.set(backupRef.collection("submissions").doc(sub.id), sub.data()));
+    swallow(writer.delete(sub.ref));
+  }
+  swallow(writer.delete(unitRef));
+}
+
+/** Single-unit delete: archive + delete + best-effort Drive folder move. Returns false if the unit is gone. */
+async function deleteOneUnit(
   db: Firestore,
   unitId: string,
   meta: DeleteMeta,
 ): Promise<boolean> {
-  const unitRef = db.collection("auditUnits").doc(unitId);
-  const unitSnap = await unitRef.get();
-  if (!unitSnap.exists) return false;
-  const unitData = unitSnap.data() as DocumentData;
+  const snap = await db.collection("auditUnits").doc(unitId).get();
+  if (!snap.exists) return false;
+  const unitData = snap.data() as DocumentData;
 
-  const subsSnap = await unitRef.collection("submissions").get();
+  const writer = db.bulkWriter();
+  await archiveAndDelete(db, writer, unitId, unitData, meta);
+  await writer.close();
 
-  const backupRef = db.collection("auditUnitsDeleted").doc(`${meta.stamp}__${unitId}`);
-  const backupBatch = db.batch();
-  backupBatch.set(backupRef, {
-    originalUnitId: unitId,
-    unitNumber: unitData.unitNumber ?? "",
-    projectName: unitData.projectName ?? "",
-    driveFolderId: unitData.driveFolderId ?? null,
-    submissionCount: subsSnap.size,
-    deletedBy: meta.deletedBy,
-    deletedByName: meta.deletedByName,
-    deletedAt: FieldValue.serverTimestamp(),
-    unit: unitData,
-  });
-  // Store submissions as a subcollection so a unit with a long audit history
-  // never approaches Firestore's 1 MB document limit.
-  subsSnap.docs.forEach((d) => {
-    backupBatch.set(backupRef.collection("submissions").doc(d.id), d.data());
-  });
-  await backupBatch.commit();
-
-  // Best-effort Drive archival (photos are preserved regardless: the folder id
-  // is recorded in the backup doc above).
-  if (meta.moveDrive && unitData.driveFolderId) {
+  // Best-effort Drive archival (photos stay recoverable regardless: the folder
+  // id is recorded in the backup doc).
+  if (unitData.driveFolderId) {
     try {
       await moveFolderToBackup(
         unitData.driveFolderId as string,
@@ -80,44 +113,44 @@ async function backupAndDeleteUnit(
         meta.date,
       );
     } catch {
-      // Leave the folder in place; it's still recoverable via driveFolderId.
+      // Leave the folder in place; still recoverable via driveFolderId.
     }
   }
-
-  // Delete originals: submissions (chunked ≤500/batch), then the unit doc.
-  for (let i = 0; i < subsSnap.docs.length; i += SUB_DELETE_CHUNK) {
-    const batch = db.batch();
-    subsSnap.docs.slice(i, i + SUB_DELETE_CHUNK).forEach((d) => batch.delete(d.ref));
-    await batch.commit();
-  }
-  await unitRef.delete();
   return true;
 }
 
+/** Bulk delete every unit. Drive folders are only recorded (not moved) to keep the run fast and quota-safe. */
 async function deleteAllUnits(db: Firestore, meta: DeleteMeta): Promise<number> {
+  const writer = db.bulkWriter();
   let deleted = 0;
   let last: QueryDocumentSnapshot | null = null;
-  // Page by document id. The cursor advances even past units that fail, so one
-  // bad unit can't stall the whole run or cause an infinite loop.
+  // Page by document id. The cursor is a stable id even after a page is deleted,
+  // so the loop always advances and never revisits or stalls.
   for (;;) {
     let q: Query = db.collection("auditUnits").orderBy("__name__").limit(PAGE_SIZE);
     if (last) q = q.startAfter(last);
     const page = await q.get();
     if (page.empty) break;
 
-    for (let i = 0; i < page.docs.length; i += DELETE_ALL_CONCURRENCY) {
-      const slice = page.docs.slice(i, i + DELETE_ALL_CONCURRENCY);
-      const results = await Promise.all(
-        slice.map((d) =>
-          backupAndDeleteUnit(db, d.id, meta).catch(() => false),
-        ),
+    for (let i = 0; i < page.docs.length; i += READ_CONCURRENCY) {
+      const slice = page.docs.slice(i, i + READ_CONCURRENCY);
+      await Promise.all(
+        slice.map(async (d) => {
+          try {
+            await archiveAndDelete(db, writer, d.id, d.data(), meta);
+            deleted++;
+          } catch {
+            // Skip this unit; the cursor still advances past it.
+          }
+        }),
       );
-      deleted += results.filter(Boolean).length;
     }
 
     last = page.docs[page.docs.length - 1];
     if (page.size < PAGE_SIZE) break;
   }
+
+  await writer.close(); // flush + await all throttled writes
   return deleted;
 }
 
@@ -146,25 +179,26 @@ export async function POST(request: NextRequest) {
       all?: boolean;
     };
     const { date, stamp } = dateStamp();
-    const deletedByName =
-      callerSnap.data()?.displayName ??
-      callerSnap.data()?.email ??
-      decoded.email ??
-      "";
-    const baseMeta = { deletedBy: decoded.uid, deletedByName, date, stamp };
+    const meta: DeleteMeta = {
+      deletedBy: decoded.uid,
+      deletedByName:
+        callerSnap.data()?.displayName ??
+        callerSnap.data()?.email ??
+        decoded.email ??
+        "",
+      date,
+      stamp,
+    };
 
     if (body.all) {
-      const deleted = await deleteAllUnits(db, { ...baseMeta, moveDrive: false });
+      const deleted = await deleteAllUnits(db, meta);
       return NextResponse.json({ deleted, backedUp: deleted });
     }
 
     if (!body.unitId) {
       return NextResponse.json({ error: "Missing unitId" }, { status: 400 });
     }
-    const ok = await backupAndDeleteUnit(db, body.unitId, {
-      ...baseMeta,
-      moveDrive: true,
-    });
+    const ok = await deleteOneUnit(db, body.unitId, meta);
     if (!ok) return NextResponse.json({ error: "Unit not found" }, { status: 404 });
     return NextResponse.json({ deleted: 1, backedUp: 1 });
   } catch (error) {

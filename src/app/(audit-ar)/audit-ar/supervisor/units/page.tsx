@@ -60,6 +60,14 @@ export default function SupervisorUnitsPage() {
     void load().finally(() => setLoading(false));
   }, [load]);
 
+  // Optimistic local updates so the list feels instant — the delete route does
+  // the heavy (backup + throttled) work; we don't re-read the whole collection.
+  const removeUnit = useCallback(
+    (id: string) => setUnits((prev) => prev.filter((u) => u.id !== id)),
+    [],
+  );
+  const clearUnits = useCallback(() => setUnits([]), []);
+
   const auditedCount = useMemo(
     () => units.filter((u) => u.submissionCount > 0).length,
     [units],
@@ -153,7 +161,12 @@ export default function SupervisorUnitsPage() {
         </div>
         <div className="flex gap-2">
           {isSupervisor && units.length > 0 && (
-            <DeleteAllButton total={units.length} auditedCount={auditedCount} onDone={load} />
+            <DeleteAllButton
+              total={units.length}
+              auditedCount={auditedCount}
+              onDeleted={clearUnits}
+              onError={load}
+            />
           )}
           <Button
             variant="outline"
@@ -239,7 +252,7 @@ export default function SupervisorUnitsPage() {
                   </TableCell>
                   {isSupervisor && (
                     <TableCell className="text-right">
-                      <DeleteUnitButton unit={u} onDone={load} />
+                      <DeleteUnitButton unit={u} onDeleted={removeUnit} onError={load} />
                     </TableCell>
                   )}
                 </TableRow>
@@ -276,10 +289,12 @@ function FilterChip({
 
 function DeleteUnitButton({
   unit,
-  onDone,
+  onDeleted,
+  onError,
 }: {
   unit: AuditUnitDoc;
-  onDone: () => void;
+  onDeleted: (id: string) => void;
+  onError: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [ack, setAck] = useState(false);
@@ -292,9 +307,10 @@ function DeleteUnitButton({
       await deleteUnit(unit.id);
       toast.success(`Unit ${unit.unitNumber} dihapus`);
       setOpen(false);
-      onDone();
+      onDeleted(unit.id);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Gagal menghapus unit");
+      onError();
     } finally {
       setBusy(false);
     }
@@ -364,11 +380,13 @@ const DELETE_ALL_PHRASE = "HAPUS SEMUA";
 function DeleteAllButton({
   total,
   auditedCount,
-  onDone,
+  onDeleted,
+  onError,
 }: {
   total: number;
   auditedCount: number;
-  onDone: () => void;
+  onDeleted: () => void;
+  onError: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -380,9 +398,10 @@ function DeleteAllButton({
       const res = await deleteAllUnits();
       toast.success(`${res.deleted} unit dihapus (backup: ${res.backedUp})`);
       setOpen(false);
-      onDone();
+      onDeleted();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Gagal menghapus unit");
+      onError();
     } finally {
       setBusy(false);
     }

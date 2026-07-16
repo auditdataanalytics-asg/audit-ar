@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
-import { getFirestore, type Firestore } from "firebase/firestore";
+import { getAuth, connectAuthEmulator, type Auth } from "firebase/auth";
+import { getFirestore, connectFirestoreEmulator, type Firestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -10,6 +10,12 @@ const firebaseConfig = {
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
+
+// When true (local dev only), the client SDK talks to the Firebase emulators
+// instead of production — so import/delete testing never touches prod quota.
+const USE_EMULATOR =
+  process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === "true" &&
+  typeof window !== "undefined";
 
 function getFirebaseApp(): FirebaseApp {
   return getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
@@ -21,6 +27,9 @@ let _db: Firestore | null = null;
 export function getClientAuth(): Auth {
   if (!_auth) {
     _auth = getAuth(getFirebaseApp());
+    if (USE_EMULATOR) {
+      connectAuthEmulator(_auth, "http://127.0.0.1:9099", { disableWarnings: true });
+    }
   }
   return _auth;
 }
@@ -28,6 +37,9 @@ export function getClientAuth(): Auth {
 export function getClientDb(): Firestore {
   if (!_db) {
     _db = getFirestore(getFirebaseApp());
+    if (USE_EMULATOR) {
+      connectFirestoreEmulator(_db, "127.0.0.1", 8080);
+    }
   }
   return _db;
 }

@@ -12,13 +12,22 @@ function getAdminApp(): App {
     return _app;
   }
 
-  _app = initializeApp({
-    credential: cert({
-      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
-      clientEmail: process.env.FIREBASE_ADMIN_CLIENT_EMAIL!,
-      privateKey: process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-    }),
-  });
+  // When the emulator hosts are set (local dev), the Admin SDK auto-routes to
+  // them and needs no real service-account credentials.
+  const useEmulator =
+    !!process.env.FIRESTORE_EMULATOR_HOST || !!process.env.FIREBASE_AUTH_EMULATOR_HOST;
+
+  _app = useEmulator
+    ? initializeApp({
+        projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "audit-ar-b05a7",
+      })
+    : initializeApp({
+        credential: cert({
+          projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
+          clientEmail: process.env.FIREBASE_ADMIN_CLIENT_EMAIL!,
+          privateKey: process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+        }),
+      });
 
   return _app;
 }

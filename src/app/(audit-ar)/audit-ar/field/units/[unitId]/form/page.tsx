@@ -59,10 +59,21 @@ import {
 import { compressImage } from "@/lib/audit-ar/google/image-compress";
 
 const PHOTO_LABEL_OTHER = "other";
-const PHOTO_LABEL_OPTIONS = OCCUPANCY_PHOTO_FIELDS.map((f) => ({
-  value: f.key,
-  label: f.label,
-}));
+const PHOTO_LABEL_AREA = "area";
+const PHOTO_LABEL_KAVLING = "papan-kavling";
+const PHOTO_LABEL_OPTIONS = [
+  { value: PHOTO_LABEL_AREA, label: "Area" },
+  { value: PHOTO_LABEL_KAVLING, label: "Papan Kavling" },
+  ...OCCUPANCY_PHOTO_FIELDS.map((f) => ({ value: f.key, label: f.label })),
+];
+
+// Default photo label depends on the unit's Tipe Unit: a Kavling unit defaults to
+// "Papan Kavling", everything else defaults to "Area".
+function defaultPhotoLabel(unit: AuditUnitDoc | null): string {
+  return unit?.unitType?.toLowerCase().includes("kavling")
+    ? PHOTO_LABEL_KAVLING
+    : PHOTO_LABEL_AREA;
+}
 
 // Public Drive files render directly from the CDN by id (works immediately after
 // upload, before Drive has generated its own thumbnailLink).
@@ -185,13 +196,15 @@ export default function FieldAuditFormPage() {
   // the cron swept it). Not during our own submit or intentional leave.
   useEffect(() => {
     if (loading || !unit || !user || submitting || leavingRef.current) return;
-    const mine = isLockOwnedLive(
-      unit.lock?.lockedBy,
-      unit.lock?.lockedAt?.toMillis(),
-      user.uid,
-      Date.now(),
-    );
-    if (!mine) redirectLockLost();
+    const lock = unit.lock;
+    const lockedAtMs = lock?.lockedAt?.toMillis();
+    // A lock we JUST acquired shows lockedAt=null in the first (pending) local
+    // snapshot because serverTimestamp() hasn't resolved yet. That's ours, not a
+    // loss — don't redirect until the server confirms (or it's genuinely gone).
+    const pendingOwnAcquire =
+      !!lock && lock.lockedBy === user.uid && lockedAtMs == null;
+    const mine = isLockOwnedLive(lock?.lockedBy, lockedAtMs, user.uid, Date.now());
+    if (!pendingOwnAcquire && !mine) redirectLockLost();
   }, [loading, unit, user, submitting, redirectLockLost]);
 
   // Hydrate the form from a previously saved draft (owned by this user).
@@ -207,6 +220,8 @@ export default function FieldAuditFormPage() {
       setRemarks(d.remarks ?? "");
       setAttachments(d.attachments ?? []);
     }
+    // Pre-select the photo label by unit type (Kavling → Papan Kavling, else Area).
+    setPhotoLabelKey(defaultPhotoLabel(unit));
     hydratedRef.current = true;
   }, [unit, user]);
 

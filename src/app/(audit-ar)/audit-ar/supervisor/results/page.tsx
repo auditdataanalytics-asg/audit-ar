@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Download, Images, Loader2, Search } from "lucide-react";
-import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 
 import { StatusBadge, STATUS_LABELS } from "@/components/audit-ar/status-badge";
 import { AuditPhotoImage } from "@/components/audit-ar/audit-photo-image";
+import { DataPagination } from "@/components/audit-ar/data-pagination";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,7 +31,7 @@ import {
   countAuditedUnits,
   countUnits,
   getAuditUnits,
-  getAuditUnitsPage,
+  getAuditUnitsNumberedPage,
   getSubmission,
   shareUnitDriveFolders,
 } from "@/lib/audit-ar/firestore";
@@ -42,19 +42,17 @@ import {
   formatPltStatus,
   type AuditAttachment,
   type AuditSubmissionDoc,
-  type AuditUnitDoc,
+  type AuditUnitListItem,
   type UnitAuditStatus,
 } from "@/lib/audit-ar/types";
 import { formatDateTime } from "@/lib/shared/date-format";
 
-const PAGE_SIZE = 50;
-
 interface AuditResult {
-  unit: AuditUnitDoc;
+  unit: AuditUnitListItem;
   submission: AuditSubmissionDoc | null;
 }
 
-async function loadResults(units: AuditUnitDoc[]): Promise<AuditResult[]> {
+async function loadResults(units: AuditUnitListItem[]): Promise<AuditResult[]> {
   const submissions = await Promise.all(
     units.map((unit) =>
       unit.currentSubmissionId
@@ -68,12 +66,12 @@ async function loadResults(units: AuditUnitDoc[]): Promise<AuditResult[]> {
 
 export default function SupervisorAuditResultsPage() {
   const [results, setResults] = useState<AuditResult[]>([]);
-  const [cursor, setCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<UnitAuditStatus | "all">("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [pageTotal, setPageTotal] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [auditedTotal, setAuditedTotal] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -95,16 +93,22 @@ export default function SupervisorAuditResultsPage() {
     let active = true;
     const timer = setTimeout(() => {
       setLoading(true);
-      getAuditUnitsPage({ statusFilter, search, pageSize: PAGE_SIZE })
-        .then(async (page) => ({ page, rows: await loadResults(page.units) }))
-        .then(({ page, rows }) => {
+      getAuditUnitsNumberedPage({ statusFilter, search, page, pageSize })
+        .then(async (result) => ({ result, rows: await loadResults(result.units) }))
+        .then(({ result, rows }) => {
           if (!active) return;
           setResults(rows);
-          setCursor(page.cursor);
-          setHasMore(page.hasMore);
+          setPageTotal(result.total);
+          if (result.page !== page) setPage(result.page);
         })
-        .catch(() => {
-          if (active) toast.error("Gagal memuat hasil audit");
+        .catch((error) => {
+          if (active) {
+            toast.error(
+              error instanceof Error
+                ? `Gagal memuat hasil audit: ${error.message}`
+                : "Gagal memuat hasil audit",
+            );
+          }
         })
         .finally(() => {
           if (active) setLoading(false);
@@ -115,28 +119,7 @@ export default function SupervisorAuditResultsPage() {
       active = false;
       clearTimeout(timer);
     };
-  }, [statusFilter, search]);
-
-  async function loadMore() {
-    if (!cursor) return;
-    setLoadingMore(true);
-    try {
-      const page = await getAuditUnitsPage({
-        statusFilter,
-        search,
-        cursor,
-        pageSize: PAGE_SIZE,
-      });
-      const rows = await loadResults(page.units);
-      setResults((previous) => [...previous, ...rows]);
-      setCursor(page.cursor);
-      setHasMore(page.hasMore);
-    } catch {
-      toast.error("Gagal memuat lebih banyak");
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  }, [statusFilter, search, page, pageSize]);
 
   async function handleExport() {
     setExporting(true);
@@ -221,7 +204,10 @@ export default function SupervisorAuditResultsPage() {
           <Input
             placeholder="Cari nomor unit (awalan)..."
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setPage(1);
+            }}
             className="pl-9"
           />
         </div>
@@ -229,14 +215,20 @@ export default function SupervisorAuditResultsPage() {
           <FilterChip
             label="Semua"
             active={statusFilter === "all"}
-            onClick={() => setStatusFilter("all")}
+            onClick={() => {
+              setStatusFilter("all");
+              setPage(1);
+            }}
           />
           {UNIT_AUDIT_STATUSES.map((status) => (
             <FilterChip
               key={status}
               label={STATUS_LABELS[status]}
               active={statusFilter === status}
-              onClick={() => setStatusFilter(status)}
+              onClick={() => {
+                setStatusFilter(status);
+                setPage(1);
+              }}
             />
           ))}
         </div>
@@ -306,14 +298,16 @@ export default function SupervisorAuditResultsPage() {
             </Table>
           </div>
 
-          {hasMore && (
-            <div className="flex justify-center">
-              <Button variant="outline" onClick={loadMore} disabled={loadingMore}>
-                {loadingMore && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-                Muat lebih banyak
-              </Button>
-            </div>
-          )}
+          <DataPagination
+            page={page}
+            pageSize={pageSize}
+            totalItems={pageTotal}
+            onPageChange={setPage}
+            onPageSizeChange={(nextPageSize) => {
+              setPageSize(nextPageSize);
+              setPage(1);
+            }}
+          />
         </>
       )}
     </div>
@@ -331,7 +325,7 @@ function AuditPhotoSummary({
   unit,
   submission,
 }: {
-  unit: AuditUnitDoc;
+  unit: AuditUnitListItem;
   submission: AuditSubmissionDoc | null;
 }) {
   const attachments = submission?.attachments ?? [];
@@ -444,7 +438,7 @@ function AuditResultDetailDialog({
   unit,
   submission,
 }: {
-  unit: AuditUnitDoc;
+  unit: AuditUnitListItem;
   submission: AuditSubmissionDoc | null;
 }) {
   const attachments = submission?.attachments ?? [];

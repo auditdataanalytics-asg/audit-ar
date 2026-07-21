@@ -124,6 +124,24 @@ export interface AuditUnitDoc {
   importBatchId: string; // which import created/last-touched this row
 }
 
+export type AuditUnitListItem = Pick<
+  AuditUnitDoc,
+  | "id"
+  | "unitNumber"
+  | "projectName"
+  | "cluster"
+  | "unitDetail"
+  | "pelataranSistem"
+  | "brandName"
+  | "unitType"
+  | "concernNotes"
+  | "concernFlags"
+  | "status"
+  | "currentSubmissionId"
+  | "submissionCount"
+  | "driveFolderId"
+>;
+
 // Fields that come from the master-data Excel (overwritten on re-import)
 export type AuditUnitMasterFields = Pick<
   AuditUnitDoc,

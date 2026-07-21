@@ -1,30 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Search, Loader2, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
-import type { QueryDocumentSnapshot, DocumentData } from "firebase/firestore";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { StatusBadge, STATUS_LABELS } from "@/components/audit-ar/status-badge";
-import { getAuditUnitsPage } from "@/lib/audit-ar/firestore";
-import { UNIT_AUDIT_STATUSES, type AuditUnitDoc, type UnitAuditStatus } from "@/lib/audit-ar/types";
+import { DataPagination } from "@/components/audit-ar/data-pagination";
+import { getAuditUnitsNumberedPage } from "@/lib/audit-ar/firestore";
+import {
+  UNIT_AUDIT_STATUSES,
+  type AuditUnitListItem,
+  type UnitAuditStatus,
+} from "@/lib/audit-ar/types";
 import { cn } from "@/lib/utils";
 
-const PAGE_SIZE = 50;
-
 export default function FieldUnitsPage() {
-  const [units, setUnits] = useState<AuditUnitDoc[]>([]);
-  const [cursor, setCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const [hasMore, setHasMore] = useState(false);
+  const [units, setUnits] = useState<AuditUnitListItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<UnitAuditStatus | "all">("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [pageTotal, setPageTotal] = useState(0);
 
   // Load page 1 on filter/search change (search debounced). Only the current
   // page is read + rendered — never the whole collection.
@@ -32,15 +34,19 @@ export default function FieldUnitsPage() {
     let active = true;
     const t = setTimeout(() => {
       setLoading(true);
-      getAuditUnitsPage({ statusFilter, search, pageSize: PAGE_SIZE })
-        .then((page) => {
+      getAuditUnitsNumberedPage({ statusFilter, search, page, pageSize })
+        .then((result) => {
           if (!active) return;
-          setUnits(page.units);
-          setCursor(page.cursor);
-          setHasMore(page.hasMore);
+          setUnits(result.units);
+          setPageTotal(result.total);
+          if (result.page !== page) setPage(result.page);
         })
-        .catch(() => {
-          if (active) toast.error("Gagal memuat unit");
+        .catch((error) => {
+          if (active) {
+            toast.error(
+              error instanceof Error ? `Gagal memuat unit: ${error.message}` : "Gagal memuat unit",
+            );
+          }
         })
         .finally(() => {
           if (active) setLoading(false);
@@ -50,22 +56,7 @@ export default function FieldUnitsPage() {
       active = false;
       clearTimeout(t);
     };
-  }, [statusFilter, search]);
-
-  const loadMore = useCallback(async () => {
-    if (!cursor) return;
-    setLoadingMore(true);
-    try {
-      const page = await getAuditUnitsPage({ statusFilter, search, cursor, pageSize: PAGE_SIZE });
-      setUnits((prev) => [...prev, ...page.units]);
-      setCursor(page.cursor);
-      setHasMore(page.hasMore);
-    } catch {
-      toast.error("Gagal memuat lebih banyak");
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [cursor, statusFilter, search]);
+  }, [statusFilter, search, page, pageSize]);
 
   return (
     <div className="space-y-4">
@@ -75,14 +66,32 @@ export default function FieldUnitsPage() {
           <Input
             placeholder="Cari nomor unit (awalan)..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             className="h-11 pl-9"
           />
         </div>
         <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1">
-          <Chip label="Semua" active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
+          <Chip
+            label="Semua"
+            active={statusFilter === "all"}
+            onClick={() => {
+              setStatusFilter("all");
+              setPage(1);
+            }}
+          />
           {UNIT_AUDIT_STATUSES.map((s) => (
-            <Chip key={s} label={STATUS_LABELS[s]} active={statusFilter === s} onClick={() => setStatusFilter(s)} />
+            <Chip
+              key={s}
+              label={STATUS_LABELS[s]}
+              active={statusFilter === s}
+              onClick={() => {
+                setStatusFilter(s);
+                setPage(1);
+              }}
+            />
           ))}
         </div>
       </div>
@@ -109,14 +118,18 @@ export default function FieldUnitsPage() {
               </Card>
             </Link>
           ))}
-          {hasMore && (
-            <div className="flex justify-center pt-2">
-              <Button variant="outline" onClick={loadMore} disabled={loadingMore}>
-                {loadingMore && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-                Muat lebih banyak
-              </Button>
-            </div>
-          )}
+          <div className="pt-2">
+            <DataPagination
+              page={page}
+              pageSize={pageSize}
+              totalItems={pageTotal}
+              onPageChange={setPage}
+              onPageSizeChange={(nextPageSize) => {
+                setPageSize(nextPageSize);
+                setPage(1);
+              }}
+            />
+          </div>
         </div>
       )}
     </div>

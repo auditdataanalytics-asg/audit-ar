@@ -13,12 +13,10 @@ import {
   where,
   orderBy,
   limit,
-  startAfter,
   writeBatch,
   runTransaction,
   serverTimestamp,
   type QueryConstraint,
-  type QueryDocumentSnapshot,
   type DocumentData,
   type Firestore,
 } from "firebase/firestore";
@@ -27,6 +25,7 @@ import { LOCK_TTL_MS } from "./constants";
 import { isLockOwnedLive } from "./lock-expiry";
 import type {
   AuditUnitDoc,
+  AuditUnitListItem,
   AuditSubmissionDoc,
   AuditAttachment,
   AuditCategoryDoc,
@@ -38,6 +37,10 @@ import type {
 import type { AuditUnitRow } from "./validators";
 import { normalizeUnitNumber, unitIdFromNumber } from "./unit-id";
 import { canTransition } from "./status-machine";
+import {
+  DEFAULT_PAGE_SIZE,
+  isPaginationPageSize,
+} from "./pagination";
 
 // Test-only seam: emulator-backed Firestore instances are injected here so the
 // data-layer functions can run against @firebase/rules-unit-testing contexts
@@ -95,49 +98,98 @@ export function countAuditedUnits(): Promise<number> {
   return countUnits([where("submissionCount", ">", 0)]);
 }
 
-export interface AuditUnitsPage {
-  units: AuditUnitDoc[];
-  cursor: QueryDocumentSnapshot<DocumentData> | null;
-  hasMore: boolean;
+export interface AuditUnitsNumberedPage {
+  units: AuditUnitListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 }
 
-/**
- * One page of units, ordered by `unitNumberNorm`. Avoids reading the entire
- * collection on every list view. `search` does a prefix match on the normalized
- * unit number; `statusFilter` filters server-side. Pass the previous page's
- * `cursor` to load the next page.
- *
- * Needs the composite index (status ASC, unitNumberNorm ASC) — see firestore.indexes.json.
- */
-export async function getAuditUnitsPage(opts: {
+export interface AuditUnitsNumberedPageOptions {
   statusFilter?: UnitAuditStatus | "all";
   search?: string;
-  cursor?: QueryDocumentSnapshot<DocumentData> | null;
+  page?: number;
   pageSize?: number;
-} = {}): Promise<AuditUnitsPage> {
-  const pageSize = opts.pageSize ?? 50;
-  const constraints: QueryConstraint[] = [];
+}
 
+/** Reliable client-SDK fallback when the optimized server endpoint is unavailable. */
+export async function getAuditUnitsNumberedPageFromFirestore(
+  opts: AuditUnitsNumberedPageOptions = {},
+): Promise<AuditUnitsNumberedPage> {
+  const pageSize = isPaginationPageSize(opts.pageSize)
+    ? opts.pageSize
+    : DEFAULT_PAGE_SIZE;
+  const requestedPage =
+    typeof opts.page === "number" && Number.isInteger(opts.page) && opts.page > 0
+      ? opts.page
+      : 1;
+  const filters: QueryConstraint[] = [];
   if (opts.statusFilter && opts.statusFilter !== "all") {
-    constraints.push(where("status", "==", opts.statusFilter));
+    filters.push(where("status", "==", opts.statusFilter));
   }
-  const q = opts.search?.trim() ? normalizeUnitNumber(opts.search) : "";
-  if (q) {
-    constraints.push(where("unitNumberNorm", ">=", q));
-    constraints.push(where("unitNumberNorm", "<", q + ""));
+  const search = opts.search?.trim() ? normalizeUnitNumber(opts.search) : "";
+  if (search) {
+    filters.push(where("unitNumberNorm", ">=", search));
+    filters.push(where("unitNumberNorm", "<", `${search}\uf8ff`));
   }
-  constraints.push(orderBy("unitNumberNorm"));
-  if (opts.cursor) constraints.push(startAfter(opts.cursor));
-  constraints.push(limit(pageSize + 1)); // fetch one extra to detect hasMore
 
-  const snap = await getDocs(query(collection(db(), "auditUnits"), ...constraints));
-  const hasMore = snap.docs.length > pageSize;
-  const pageDocs = hasMore ? snap.docs.slice(0, pageSize) : snap.docs;
-  return {
-    units: pageDocs.map((d) => ({ id: d.id, ...d.data() }) as AuditUnitDoc),
-    cursor: pageDocs.length ? pageDocs[pageDocs.length - 1] : null,
-    hasMore,
-  };
+  const total = await countUnits(filters);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const snapshot = await getDocs(
+    query(
+      collection(db(), "auditUnits"),
+      ...filters,
+      orderBy("unitNumberNorm"),
+      limit(page * pageSize),
+    ),
+  );
+  const startIndex = (page - 1) * pageSize;
+  const units = snapshot.docs
+    .slice(startIndex, startIndex + pageSize)
+    .map((document) => ({ id: document.id, ...document.data() }) as AuditUnitListItem);
+
+  return { units, page, pageSize, total, totalPages };
+}
+
+/** Load an arbitrary numbered page, falling back to the authenticated client SDK. */
+export async function getAuditUnitsNumberedPage(
+  opts: AuditUnitsNumberedPageOptions = {},
+): Promise<AuditUnitsNumberedPage> {
+  const currentUser = getClientAuth().currentUser;
+  if (currentUser) {
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/audit-ar/units/page", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          statusFilter: opts.statusFilter ?? "all",
+          search: opts.search ?? "",
+          page: opts.page ?? 1,
+          pageSize: opts.pageSize ?? DEFAULT_PAGE_SIZE,
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as Partial<AuditUnitsNumberedPage>;
+      if (response.ok) {
+        return {
+          units: data.units ?? [],
+          page: data.page ?? 1,
+          pageSize: data.pageSize ?? DEFAULT_PAGE_SIZE,
+          total: data.total ?? 0,
+          totalPages: data.totalPages ?? 1,
+        };
+      }
+    } catch {
+      // The authenticated Firestore fallback below preserves list availability.
+    }
+  }
+
+  return getAuditUnitsNumberedPageFromFirestore(opts);
 }
 
 /**

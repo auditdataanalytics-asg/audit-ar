@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { Loader2 } from "lucide-react";
@@ -39,20 +39,77 @@ interface ProjectSummary {
   counts: StatusCounts;
 }
 
+interface DashboardDetail {
+  projects: ProjectSummary[];
+  statusTotals: StatusCounts;
+  trend: Array<{ label: string; count: number }>;
+}
+
 function createStatusCounts(): StatusCounts {
   return { not_started: 0, draft: 0, pending: 0, approved: 0, rejected: 0 };
 }
 
+function buildDashboardDetail(units: AuditUnitDoc[]): DashboardDetail {
+  const byProject = new Map<string, ProjectSummary>();
+  const statusTotals = createStatusCounts();
+  const days = 14;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const buckets = Array.from({ length: days }, (_, index) => {
+    const date = new Date(today);
+    date.setDate(today.getDate() - (days - 1 - index));
+    return {
+      key: date.toDateString(),
+      label: `${date.getDate()}/${date.getMonth() + 1}`,
+      count: 0,
+    };
+  });
+  const bucketIndex = new Map(buckets.map((bucket, index) => [bucket.key, index]));
+
+  for (const unit of units) {
+    const projectName =
+      unit.projectName?.trim().replace(/\s+/g, " ") || "Tanpa proyek";
+    const projectKey = projectName.toLocaleLowerCase("id-ID");
+    const project = byProject.get(projectKey) ?? {
+      projectName,
+      total: 0,
+      counts: createStatusCounts(),
+    };
+    project.total += 1;
+    project.counts[unit.status] += 1;
+    statusTotals[unit.status] += 1;
+    byProject.set(projectKey, project);
+
+    if (unit.status === "approved" && unit.lastReviewedAt) {
+      const reviewedAt = unit.lastReviewedAt.toDate();
+      reviewedAt.setHours(0, 0, 0, 0);
+      const index = bucketIndex.get(reviewedAt.toDateString());
+      if (index !== undefined) buckets[index].count += 1;
+    }
+  }
+
+  return {
+    projects: Array.from(byProject.values()).sort((a, b) =>
+      a.projectName.localeCompare(b.projectName, "id-ID", {
+        numeric: true,
+        sensitivity: "base",
+      }),
+    ),
+    statusTotals,
+    trend: buckets.map((bucket) => ({ label: bucket.label, count: bucket.count })),
+  };
+}
+
 export default function SupervisorDashboardPage() {
-  // Headline totals come from cheap count() aggregation (one read per status),
-  // not from reading every unit. The per-project breakdown + trend need per-doc
-  // data, so they load on demand when the supervisor asks for them.
+  // Headline totals come from cheap count() aggregation (one read per status).
+  // Project/trend detail reads every unit, so it is loaded only on request.
   const [totals, setTotals] = useState<StatusCounts | null>(null);
   const [totalsError, setTotalsError] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
-  const [detail, setDetail] = useState<AuditUnitDoc[] | null>(null);
+  const [detail, setDetail] = useState<DashboardDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -78,65 +135,24 @@ export default function SupervisorDashboardPage() {
     };
   }, [attempt]);
 
-  const totalUnits = totals
-    ? UNIT_AUDIT_STATUSES.reduce((sum, s) => sum + totals[s], 0)
-    : 0;
-
   async function loadDetail() {
+    if (detailLoading) return;
     setDetailLoading(true);
+    setDetailError(false);
     try {
-      setDetail(await getAuditUnits());
+      const units = await getAuditUnits();
+      setDetail(buildDashboardDetail(units));
     } catch {
+      setDetailError(true);
       toast.error("Gagal memuat rincian per proyek");
     } finally {
       setDetailLoading(false);
     }
   }
 
-  const summary = useMemo(() => {
-    if (!detail) return null;
-    const byProject = new Map<string, ProjectSummary>();
-    for (const unit of detail) {
-      const projectName =
-        unit.projectName?.trim().replace(/\s+/g, " ") || "Tanpa proyek";
-      const projectKey = projectName.toLocaleLowerCase("id-ID");
-      const project = byProject.get(projectKey) ?? {
-        projectName,
-        total: 0,
-        counts: createStatusCounts(),
-      };
-      project.total++;
-      project.counts[unit.status]++;
-      byProject.set(projectKey, project);
-    }
-    return Array.from(byProject.values()).sort((a, b) =>
-      a.projectName.localeCompare(b.projectName, "id-ID", {
-        numeric: true,
-        sensitivity: "base",
-      }),
-    );
-  }, [detail]);
-
-  const trend = useMemo(() => {
-    const days = 14;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const buckets = Array.from({ length: days }, (_, i) => {
-      const d = new Date(today);
-      d.setDate(today.getDate() - (days - 1 - i));
-      return { key: d.toDateString(), label: `${d.getDate()}/${d.getMonth() + 1}`, count: 0 };
-    });
-    const idx = new Map(buckets.map((b, i) => [b.key, i]));
-    for (const u of detail ?? []) {
-      if (u.status === "approved" && u.lastReviewedAt) {
-        const d = u.lastReviewedAt.toDate();
-        d.setHours(0, 0, 0, 0);
-        const i = idx.get(d.toDateString());
-        if (i !== undefined) buckets[i].count++;
-      }
-    }
-    return buckets.map((b) => ({ label: b.label, count: b.count }));
-  }, [detail]);
+  const totalUnits = totals
+    ? UNIT_AUDIT_STATUSES.reduce((sum, s) => sum + totals[s], 0)
+    : 0;
 
   return (
     <div className="space-y-10">
@@ -187,32 +203,62 @@ export default function SupervisorDashboardPage() {
           </section>
 
           <section className="space-y-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-4">
               <h2 className="font-heading text-lg font-semibold">Rincian per proyek & tren</h2>
-              {!detail && (
-                <Button variant="outline" size="sm" onClick={loadDetail} disabled={detailLoading}>
-                  {detailLoading && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-                  Tampilkan rincian
+              {!detail ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={detailLoading}
+                  onClick={loadDetail}
+                >
+                  {detailLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : null}
+                  {detailLoading ? "Memuat rincian..." : "Tampilkan rincian"}
                 </Button>
-              )}
+              ) : null}
             </div>
 
-            {!detail ? (
+            {!detail && !detailLoading && !detailError ? (
               <p className="text-sm text-muted-foreground">
-                Rincian per proyek dan grafik tren membaca data tiap unit — dimuat saat diminta agar
-                hemat kuota.
+                Rincian per proyek dan grafik tren membaca data tiap unit — dimuat saat diminta agar hemat kuota.
               </p>
-            ) : (
+            ) : null}
+
+            {detailLoading ? (
+              <div className="flex items-center justify-center gap-2 rounded-xl border border-border/60 py-12" role="status">
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                <span className="text-sm text-muted-foreground">Memuat rincian…</span>
+              </div>
+            ) : detailError ? (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-5" role="alert">
+                <p className="font-medium">Rincian gagal dimuat</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Periksa koneksi Anda, lalu coba lagi.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-4"
+                  onClick={loadDetail}
+                >
+                  Coba lagi
+                </Button>
+              </div>
+            ) : detail ? (
               <>
-                <ProjectSummaryTable rows={summary ?? []} totals={totals!} />
+                <ProjectSummaryTable rows={detail.projects} totals={detail.statusTotals} />
                 <div className="space-y-4">
                   <h3 className="text-sm font-medium text-muted-foreground">
                     Unit disetujui per hari · 14 hari terakhir
                   </h3>
-                  <AuditedTrendChart data={trend} />
+                  <AuditedTrendChart data={detail.trend} />
                 </div>
               </>
-            )}
+            ) : null}
           </section>
         </>
       )}

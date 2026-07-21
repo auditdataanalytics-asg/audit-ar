@@ -5,7 +5,6 @@ import Link from "next/link";
 import { Search, UploadCloud, Loader2, Download, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
-import type { QueryDocumentSnapshot, DocumentData } from "firebase/firestore";
 
 import { Input } from "@/components/ui/input";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -31,9 +30,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StatusBadge, STATUS_LABELS } from "@/components/audit-ar/status-badge";
+import { DataPagination } from "@/components/audit-ar/data-pagination";
 import {
   getAuditUnits,
-  getAuditUnitsPage,
+  getAuditUnitsNumberedPage,
   getSubmission,
   countUnits,
   countAuditedUnits,
@@ -47,22 +47,20 @@ import {
   UNIT_AUDIT_STATUSES,
   formatPltStatus,
   CONCERN_FLAG_LABEL,
-  type AuditUnitDoc,
+  type AuditUnitListItem,
   type UnitAuditStatus,
 } from "@/lib/audit-ar/types";
 import { cn } from "@/lib/utils";
 
-const PAGE_SIZE = 50;
-
 export default function SupervisorUnitsPage() {
   const { isSupervisor } = useAuditAr();
-  const [units, setUnits] = useState<AuditUnitDoc[]>([]);
-  const [cursor, setCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const [hasMore, setHasMore] = useState(false);
+  const [units, setUnits] = useState<AuditUnitListItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<UnitAuditStatus | "all">("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [pageTotal, setPageTotal] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [auditedTotal, setAuditedTotal] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -87,15 +85,19 @@ export default function SupervisorUnitsPage() {
     let active = true;
     const t = setTimeout(() => {
       setLoading(true);
-      getAuditUnitsPage({ statusFilter, search, pageSize: PAGE_SIZE })
-        .then((page) => {
+      getAuditUnitsNumberedPage({ statusFilter, search, page, pageSize })
+        .then((result) => {
           if (!active) return;
-          setUnits(page.units);
-          setCursor(page.cursor);
-          setHasMore(page.hasMore);
+          setUnits(result.units);
+          setPageTotal(result.total);
+          if (result.page !== page) setPage(result.page);
         })
-        .catch(() => {
-          if (active) toast.error("Gagal memuat unit");
+        .catch((error) => {
+          if (active) {
+            toast.error(
+              error instanceof Error ? `Gagal memuat unit: ${error.message}` : "Gagal memuat unit",
+            );
+          }
         })
         .finally(() => {
           if (active) setLoading(false);
@@ -105,37 +107,23 @@ export default function SupervisorUnitsPage() {
       active = false;
       clearTimeout(t);
     };
-  }, [statusFilter, search, reloadKey]);
-
-  async function loadMore() {
-    if (!cursor) return;
-    setLoadingMore(true);
-    try {
-      const page = await getAuditUnitsPage({
-        statusFilter,
-        search,
-        cursor,
-        pageSize: PAGE_SIZE,
-      });
-      setUnits((prev) => [...prev, ...page.units]);
-      setCursor(page.cursor);
-      setHasMore(page.hasMore);
-    } catch {
-      toast.error("Gagal memuat lebih banyak");
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  }, [statusFilter, search, page, pageSize, reloadKey]);
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
-  const removeUnit = useCallback((id: string) => {
-    setUnits((prev) => prev.filter((u) => u.id !== id));
-    setTotal((t) => (t == null ? t : Math.max(0, t - 1)));
-  }, []);
+  const removeUnit = useCallback(
+    (id: string) => {
+      const removingLastRow = units.length === 1;
+      setUnits((previous) => previous.filter((unit) => unit.id !== id));
+      setTotal((current) => (current == null ? current : Math.max(0, current - 1)));
+      setPageTotal((current) => Math.max(0, current - 1));
+      if (removingLastRow && page > 1) setPage(page - 1);
+    },
+    [page, units.length],
+  );
   const afterDeleteAll = useCallback(() => {
     setUnits([]);
-    setCursor(null);
-    setHasMore(false);
+    setPage(1);
+    setPageTotal(0);
     setTotal(0);
     setAuditedTotal(0);
   }, []);
@@ -249,18 +237,31 @@ export default function SupervisorUnitsPage() {
           <Input
             placeholder="Cari nomor unit (awalan)..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             className="pl-9"
           />
         </div>
         <div className="flex flex-wrap gap-1.5">
-          <FilterChip label="Semua" active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
+          <FilterChip
+            label="Semua"
+            active={statusFilter === "all"}
+            onClick={() => {
+              setStatusFilter("all");
+              setPage(1);
+            }}
+          />
           {UNIT_AUDIT_STATUSES.map((s) => (
             <FilterChip
               key={s}
               label={STATUS_LABELS[s]}
               active={statusFilter === s}
-              onClick={() => setStatusFilter(s)}
+              onClick={() => {
+                setStatusFilter(s);
+                setPage(1);
+              }}
             />
           ))}
         </div>
@@ -318,14 +319,16 @@ export default function SupervisorUnitsPage() {
             </Table>
           </div>
 
-          {hasMore && (
-            <div className="flex justify-center">
-              <Button variant="outline" onClick={loadMore} disabled={loadingMore}>
-                {loadingMore && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-                Muat lebih banyak
-              </Button>
-            </div>
-          )}
+          <DataPagination
+            page={page}
+            pageSize={pageSize}
+            totalItems={pageTotal}
+            onPageChange={setPage}
+            onPageSizeChange={(nextPageSize) => {
+              setPageSize(nextPageSize);
+              setPage(1);
+            }}
+          />
         </>
       )}
     </div>
@@ -359,7 +362,7 @@ function DeleteUnitButton({
   onDeleted,
   onError,
 }: {
-  unit: AuditUnitDoc;
+  unit: AuditUnitListItem;
   onDeleted: (id: string) => void;
   onError: () => void;
 }) {

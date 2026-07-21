@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Timestamp } from "firebase/firestore";
 
 import { Button } from "@/components/ui/button";
+import { AuditPhotoImage } from "@/components/audit-ar/audit-photo-image";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { compressImage } from "@/lib/audit-ar/google/image-compress";
 import type { AuditAttachment } from "@/lib/audit-ar/types";
@@ -73,8 +74,8 @@ export function AttachmentField({
         uploadedBy: user.uid,
         editableAfterSubmit: fieldKey.startsWith("extra"),
       });
-    } catch (err: any) {
-      toast.error(err?.message === "Google Drive is not configured (missing GOOGLE_OAUTH_* env vars)."
+    } catch (error: unknown) {
+      toast.error(error instanceof Error && error.message === "Google Drive is not configured (missing GOOGLE_OAUTH_* env vars)."
         ? "Google Drive belum dikonfigurasi"
         : "Gagal mengunggah foto");
       setPreview(null);
@@ -83,8 +84,6 @@ export function AttachmentField({
       if (inputRef.current) inputRef.current.value = "";
     }
   }
-
-  const imgSrc = preview || value?.thumbnailLink || null;
 
   return (
     <div className="flex items-center gap-3">
@@ -99,9 +98,18 @@ export function AttachmentField({
       <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted">
         {uploading ? (
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-        ) : imgSrc ? (
+        ) : preview ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={imgSrc} alt={label} className="h-full w-full object-cover" />
+          <img src={preview} alt={label} className="h-full w-full object-cover" />
+        ) : value ? (
+          <AuditPhotoImage
+            key={value.fileId}
+            attachment={value}
+            size={200}
+            alt={label}
+            className="h-full w-full object-cover"
+            placeholderClassName="[&_svg]:hidden text-[0px]"
+          />
         ) : (
           <ImageIcon className="h-5 w-5 text-muted-foreground" />
         )}

@@ -28,6 +28,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { StatusBadge } from "@/components/audit-ar/status-badge";
+import { AuditPhotoImage } from "@/components/audit-ar/audit-photo-image";
 import {
   getAuditUnit,
   getSubmission,
@@ -249,6 +250,14 @@ export default function FieldUnitDetailPage() {
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 rounded-md border bg-muted/50 px-2 py-1 text-xs"
                   >
+                    <AuditPhotoImage
+                      key={a.fileId}
+                      attachment={a}
+                      size={120}
+                      alt={a.label}
+                      className="h-8 w-8 rounded object-cover"
+                      placeholderClassName="[&_svg]:hidden text-[0px]"
+                    />
                     {a.label}
                     <ExternalLink className="h-3 w-3" />
                   </a>

@@ -49,7 +49,33 @@ export async function ensureUnitFolder(
   const configuredRoot = process.env.AUDIT_AR_DRIVE_ROOT_FOLDER_ID;
   const appFolder = await findOrCreateFolder("AuditAR", configuredRoot || undefined);
   const projectFolder = await findOrCreateFolder(projectName || "Tanpa Proyek", appFolder);
-  return findOrCreateFolder(unitNumber, projectFolder);
+  const unitFolder = await findOrCreateFolder(unitNumber, projectFolder);
+  await ensureFolderAnyoneWithLink(unitFolder);
+  return unitFolder;
+}
+
+/** Ensure a unit folder can be viewed by anyone who has its link. */
+export async function ensureFolderAnyoneWithLink(folderId: string): Promise<void> {
+  const drive = await getDrive();
+  const permissions = await drive.permissions.list({
+    fileId: folderId,
+    fields: "permissions(id,type,role)",
+    supportsAllDrives: true,
+  });
+
+  if (permissions.data.permissions?.some((permission) => permission.type === "anyone")) {
+    return;
+  }
+
+  await drive.permissions.create({
+    fileId: folderId,
+    supportsAllDrives: true,
+    requestBody: {
+      type: "anyone",
+      role: "reader",
+      allowFileDiscovery: false,
+    },
+  });
 }
 
 /**

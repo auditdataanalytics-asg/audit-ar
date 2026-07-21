@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
-import { ensureUnitFolder, uploadFile } from "@/lib/audit-ar/google/drive";
+import {
+  ensureFolderAnyoneWithLink,
+  ensureUnitFolder,
+  uploadFile,
+} from "@/lib/audit-ar/google/drive";
 import { slugifyUnitNumber } from "@/lib/audit-ar/unit-id";
 import { LOCK_TTL_MS } from "@/lib/audit-ar/constants";
 
@@ -53,6 +57,8 @@ export async function POST(request: NextRequest) {
     if (!folderId) {
       folderId = await ensureUnitFolder(unit.projectName ?? "", unit.unitNumber ?? unitId);
       await unitRef.update({ driveFolderId: folderId });
+    } else {
+      await ensureFolderAnyoneWithLink(folderId);
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
@@ -70,9 +76,9 @@ export async function POST(request: NextRequest) {
       fileName: name,
       mimeType,
     });
-  } catch (error: any) {
+  } catch (error) {
     return NextResponse.json(
-      { error: error?.message || "Upload failed" },
+      { error: error instanceof Error ? error.message : "Upload failed" },
       { status: 500 },
     );
   }

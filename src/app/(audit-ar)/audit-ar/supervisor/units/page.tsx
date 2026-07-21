@@ -37,9 +37,11 @@ import {
   getSubmission,
   countUnits,
   countAuditedUnits,
+  shareUnitDriveFolders,
   deleteUnit,
   deleteAllUnits,
 } from "@/lib/audit-ar/firestore";
+import { addUrlHyperlinks, driveFolderUrl } from "@/lib/audit-ar/excel-export";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import {
   UNIT_AUDIT_STATUSES,
@@ -143,6 +145,9 @@ export default function SupervisorUnitsPage() {
     try {
       // Export is a full dump — read every unit (explicit, occasional action).
       const all = await getAuditUnits();
+      await shareUnitDriveFolders(
+        all.filter((unit) => unit.driveFolderId).map((unit) => unit.id),
+      );
       const subs = await Promise.all(
         all.map((u) =>
           u.currentSubmissionId
@@ -177,19 +182,25 @@ export default function SupervisorUnitsPage() {
           Reviewer: s?.reviewedByName ?? "",
           "Alasan Penolakan": u.lastRejectionNote ?? "",
           "Jumlah Foto": s ? String(s.attachments.length) : "",
-          "Foto Audit": (s?.attachments ?? [])
-            .map((a, index) => `${index + 1}. ${a.label}: ${a.webViewLink}`)
-            .join("\n"),
+          "Foto Audit": driveFolderUrl(u.driveFolderId),
         };
         return row;
       });
 
       const ws = XLSX.utils.json_to_sheet(rows);
+      addUrlHyperlinks(
+        ws,
+        rows,
+        "Foto Audit",
+        "Buka folder foto audit unit di Google Drive",
+      );
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Audit AR");
       XLSX.writeFile(wb, "audit-ar-hasil.xlsx");
-    } catch {
-      toast.error("Gagal export Excel");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? `Gagal export Excel: ${error.message}` : "Gagal export Excel",
+      );
     } finally {
       setExporting(false);
     }

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Building2,
+  ClipboardList,
   ClipboardCheck,
   Tags,
   Users,
@@ -27,6 +28,7 @@ import {
 const navItems = [
   { title: "Dashboard", href: "/audit-ar/supervisor", icon: LayoutDashboard, exact: true },
   { title: "Unit & Master Data", href: "/audit-ar/supervisor/units", icon: Building2 },
+  { title: "Hasil Audit", href: "/audit-ar/supervisor/results", icon: ClipboardList },
   { title: "Review Audit", href: "/audit-ar/supervisor/review", icon: ClipboardCheck },
   { title: "Kategori", href: "/audit-ar/supervisor/categories", icon: Tags },
   { title: "Tim", href: "/audit-ar/supervisor/team", icon: Users },

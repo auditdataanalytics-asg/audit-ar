@@ -682,6 +682,42 @@ export function deleteAllUnits(): Promise<DeleteUnitsResult> {
   return callDeleteApi({ all: true });
 }
 
+const SHARE_FOLDER_BATCH_SIZE = 50;
+
+/** Make existing unit folders viewable by link before their URLs are exported. */
+export async function shareUnitDriveFolders(unitIds: string[]): Promise<number> {
+  const uniqueUnitIds = Array.from(new Set(unitIds.filter(Boolean)));
+  if (uniqueUnitIds.length === 0) return 0;
+
+  const currentUser = getClientAuth().currentUser;
+  if (!currentUser) throw new Error("Tidak ada sesi login");
+  const token = await currentUser.getIdToken();
+  let shared = 0;
+
+  for (let index = 0; index < uniqueUnitIds.length; index += SHARE_FOLDER_BATCH_SIZE) {
+    const res = await fetch("/api/audit-ar/drive/share-unit-folders", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        unitIds: uniqueUnitIds.slice(index, index + SHARE_FOLDER_BATCH_SIZE),
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      shared?: number;
+      error?: string;
+    };
+    if (!res.ok) {
+      throw new Error(data.error || "Gagal memperbarui akses folder Google Drive");
+    }
+    shared += data.shared ?? 0;
+  }
+
+  return shared;
+}
+
 // ── Cross-unit submission queries (review queue / dashboard) ──
 
 export async function getSubmissionsByStatus(

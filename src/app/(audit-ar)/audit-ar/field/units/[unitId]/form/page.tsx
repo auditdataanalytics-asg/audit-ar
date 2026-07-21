@@ -57,6 +57,7 @@ import {
   type PltStatus,
 } from "@/lib/audit-ar/types";
 import { compressImage } from "@/lib/audit-ar/google/image-compress";
+import { driveImageUrl } from "@/lib/audit-ar/attachment-image";
 
 const PHOTO_LABEL_OTHER = "other";
 const PHOTO_LABEL_AREA = "area";
@@ -73,12 +74,6 @@ function defaultPhotoLabel(unit: AuditUnitDoc | null): string {
   return unit?.unitType?.toLowerCase().includes("kavling")
     ? PHOTO_LABEL_KAVLING
     : PHOTO_LABEL_AREA;
-}
-
-// Public Drive files render directly from the CDN by id (works immediately after
-// upload, before Drive has generated its own thumbnailLink).
-function driveImageUrl(fileId: string, size: number): string {
-  return `https://lh3.googleusercontent.com/d/${fileId}=s${size}`;
 }
 
 export default function FieldAuditFormPage() {

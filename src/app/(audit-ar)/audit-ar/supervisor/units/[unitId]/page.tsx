@@ -10,6 +10,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -21,12 +28,14 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { StatusBadge } from "@/components/audit-ar/status-badge";
+import { AuditPhotoImage } from "@/components/audit-ar/audit-photo-image";
 import { getAuditUnit, getSubmissions, reviewSubmission } from "@/lib/audit-ar/firestore";
 import { useAuditAr } from "@/lib/audit-ar/hooks/use-audit-ar";
 import { formatDateTime } from "@/lib/shared/date-format";
 import {
   formatPltStatus,
   CONCERN_FLAG_LABEL,
+  type AuditAttachment,
   type AuditUnitDoc,
   type AuditSubmissionDoc,
 } from "@/lib/audit-ar/types";
@@ -273,27 +282,10 @@ function SubmissionCard({
         {s.remarks && <Field label="Catatan" value={s.remarks} />}
         {s.attachments.length > 0 && (
           <div>
-            <p className="mb-1.5 text-xs text-muted-foreground">
+            <p className="mb-2 text-xs text-muted-foreground">
               Lampiran ({s.attachments.length})
             </p>
-            <div className="flex flex-wrap gap-2">
-              {s.attachments.map((a) => (
-                <a
-                  key={a.fileId}
-                  href={a.webViewLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 rounded-md border bg-muted/50 px-2 py-1 text-xs hover:bg-muted"
-                >
-                  {a.thumbnailLink ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={a.thumbnailLink} alt={a.label} className="h-5 w-5 rounded object-cover" />
-                  ) : null}
-                  {a.label}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              ))}
-            </div>
+            <ReviewAttachmentGallery attachments={s.attachments} />
           </div>
         )}
         {review && (
@@ -341,6 +333,98 @@ function SubmissionCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function ReviewAttachmentGallery({ attachments }: { attachments: AuditAttachment[] }) {
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const selectedPhoto = selectedIndex == null ? null : attachments[selectedIndex];
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        {attachments.map((attachment, index) => (
+          <article
+            key={attachment.fileId || `${attachment.webViewLink}-${index}`}
+            className="overflow-hidden rounded-lg border bg-background"
+          >
+            <button
+              type="button"
+              onClick={() => setSelectedIndex(index)}
+              className="group block w-full cursor-zoom-in bg-muted/40 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+              aria-label={`Perbesar foto ${index + 1}: ${attachment.label || "Tanpa keterangan"}`}
+            >
+              <AuditPhotoImage
+                key={attachment.fileId}
+                attachment={attachment}
+                size={480}
+                alt={attachment.label || `Foto ${index + 1}`}
+                className="h-32 w-full object-contain transition-transform group-hover:scale-[1.02] sm:h-36"
+              />
+            </button>
+            <div className="p-2.5">
+              <p className="line-clamp-2 text-xs font-medium">
+                {attachment.label || "Tanpa keterangan"}
+              </p>
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <Dialog
+        open={selectedPhoto != null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedIndex(null);
+        }}
+      >
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl">
+          {selectedPhoto && (
+            <>
+              <DialogHeader className="pr-8">
+                <DialogTitle>
+                  Foto {(selectedIndex ?? 0) + 1} · {selectedPhoto.label || "Tanpa keterangan"}
+                </DialogTitle>
+                <DialogDescription>
+                  Klik tombol di bawah untuk membuka berkas aslinya di Google Drive.
+                </DialogDescription>
+              </DialogHeader>
+              <AuditPhotoImage
+                key={selectedPhoto.fileId}
+                attachment={selectedPhoto}
+                size={1600}
+                alt={selectedPhoto.label || `Foto ${(selectedIndex ?? 0) + 1}`}
+                className="max-h-[70vh] min-h-72 w-full rounded-lg bg-black/5 object-contain"
+              />
+              <div className="flex flex-col gap-3 rounded-lg bg-muted/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs text-muted-foreground">Keterangan</p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm">
+                    {selectedPhoto.label || "Tanpa keterangan"}
+                  </p>
+                </div>
+                {selectedPhoto.webViewLink && (
+                  <Button
+                    nativeButton={false}
+                    render={
+                      <a
+                        href={selectedPhoto.webViewLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      />
+                    }
+                    variant="outline"
+                    className="shrink-0"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    Buka di Google Drive
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
